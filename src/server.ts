@@ -10,6 +10,7 @@ type WorkforceUser = { id: string; email: string; passwordHash: string; name: st
 type WorkforceJob = { id: string; plumberId: string; date: string; reference: string; customer: string; site: string; scheduledTime: string; costCentres: string[] };
 
 const signInInput = z.object({ email: z.string().email(), password: z.string().min(1) });
+const activationInput = z.object({ code: z.string().uuid(), password: z.string().min(12).max(128) });
 const dayInput = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
 const purchaseOrderInput = z.object({ costCentre: z.string().min(1), supplier: z.string().min(1), description: z.string().min(1), quantity: z.number().positive(), cost: z.number().nonnegative() });
 const timeInput = z.object({ start: z.string().min(1), finish: z.string().min(1), note: z.string().max(500).optional() });
@@ -85,6 +86,19 @@ app.post("/v1/integrations/blake/schedules", async (request, reply) => {
   }
   return { imported, skipped: parsed.data.jobs.length - imported };
 });
+app.post("/v1/auth/activate", async (request, reply) => {
+  const parsed = activationInput.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: "Enter your setup code and a password of at least 12 characters." });
+  try {
+    const passwordHash = await bcrypt.hash(parsed.data.password, 12);
+    const activated = await blakeStore<{ account: { email: string; name: string } }>("/workforce/invites/activate", { code: parsed.data.code, passwordHash });
+    return reply.code(201).send({ ok: true, email: activated.account.email, name: activated.account.name });
+  } catch (error) {
+    request.log.error(error, "Workforce account activation failed");
+    return reply.code(400).send({ error: "That setup code has expired or has already been used." });
+  }
+});
+
 app.post("/v1/auth/sign-in", async (request, reply) => {
   const parsed = signInInput.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "Invalid email or password." });
