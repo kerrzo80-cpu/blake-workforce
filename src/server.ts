@@ -19,6 +19,7 @@ const secret = new TextEncoder().encode(process.env.WORKFORCE_JWT_SECRET ?? "dev
 const demoMode = process.env.WORKFORCE_DEMO_MODE === "true";
 const blakeSyncSecret = process.env.BLAKE_SYNC_SECRET;
 const blakeTimeConfirmationUrl = process.env.BLAKE_TIME_CONFIRMATION_URL ?? "https://insightful-lark-403.eu-west-1.convex.site/workforce/time-confirmations";
+const blakeWorkforceStoreUrl = process.env.BLAKE_WORKFORCE_STORE_URL ?? "https://insightful-lark-403.eu-west-1.convex.site";
 
 const users: WorkforceUser[] = demoMode ? [{
   id: "workforce-user-demo", email: "plumber@example.test", passwordHash: bcrypt.hashSync("change-me", 12), name: "Demo Plumber", role: "plumber",
@@ -28,19 +29,28 @@ const jobs: WorkforceJob[] = demoMode ? [{ id: "job-demo-1", plumberId: "workfor
 const submissions: Array<{ type: string; jobId: string; createdAt: string; data: unknown }> = [];
 
 async function makeToken(user: WorkforceUser) {
-  return new SignJWT({ role: user.role, organisationId: user.organisation.id }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime("8h").sign(secret);
+  return new SignJWT({ role: user.role, organisationId: user.organisation.id, email: user.email }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime("8h").sign(secret);
 }
 
 async function currentUser(request: FastifyRequest) {
   const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
   if (!token) throw new Error("UNAUTHENTICATED");
   const verified = await jwtVerify(token, secret);
-  const user = users.find(item => item.id === verified.payload.sub);
-  if (!user) throw new Error("UNAUTHENTICATED");
-  return user;
+  const email = typeof verified.payload.email === "string" ? verified.payload.email : undefined;
+  if (!email) throw new Error("UNAUTHENTICATED");
+  const stored = await blakeStore<{ account: WorkforceUser | null }>("/workforce/accounts/authenticate", { email });
+  if (!stored.account) throw new Error("UNAUTHENTICATED");
+  return stored.account;
 }
 
 function account(user: WorkforceUser) { return { user: { name: user.name, role: user.role }, organisation: { name: user.organisation.name, purchasePermission: user.organisation.purchasePermission } }; }
+
+async function blakeStore<T>(path: string, body: unknown): Promise<T> {
+  if (!blakeSyncSecret) throw new Error("BLAKE_STORE_NOT_CONFIGURED");
+  const response = await fetch(`${blakeWorkforceStoreUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-blake-sync-secret": blakeSyncSecret }, body: JSON.stringify(body) });
+  if (!response.ok) throw new Error(`BLAKE_STORE_${response.status}`);
+  return await response.json() as T;
+}
 
 function minutesFromClock(value: string) {
   const match = /^([01]\\d|2[0-3]):([0-5]\\d)$/.exec(value.trim());
@@ -63,6 +73,7 @@ app.post("/v1/integrations/blake/schedules", async (request, reply) => {
   if (!blakeSyncSecret || request.headers["x-blake-sync-secret"] !== blakeSyncSecret) return reply.code(401).send({ error: "Unauthorised schedule sync." });
   const parsed = blakeScheduleInput.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "Invalid schedule payload." });
+  await blakeStore("/workforce/schedules", parsed.data);
   let imported = 0;
   for (const incoming of parsed.data.jobs) {
     const plumber = users.find(user => user.email.toLowerCase() === incoming.plumberEmail.toLowerCase());
@@ -77,9 +88,15 @@ app.post("/v1/integrations/blake/schedules", async (request, reply) => {
 app.post("/v1/auth/sign-in", async (request, reply) => {
   const parsed = signInInput.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "Invalid email or password." });
-  const user = users.find(item => item.email.toLowerCase() === parsed.data.email.toLowerCase());
-  if (!user || !await bcrypt.compare(parsed.data.password, user.passwordHash)) return reply.code(401).send({ error: "Invalid email or password." });
-  return { ...account(user), accessToken: await makeToken(user) };
+  try {
+    const stored = await blakeStore<{ account: WorkforceUser | null }>("/workforce/accounts/authenticate", { email: parsed.data.email });
+    const user = stored.account;
+    if (!user || !await bcrypt.compare(parsed.data.password, user.passwordHash)) return reply.code(401).send({ error: "Invalid email or password." });
+    return { ...account(user), accessToken: await makeToken(user) };
+  } catch (error) {
+    request.log.error(error, "Workforce account lookup failed");
+    return reply.code(503).send({ error: "Workforce accounts are temporarily unavailable." });
+  }
 });
 app.get("/v1/me", async (request, reply) => {
   try { return account(await currentUser(request)); } catch { return reply.code(401).send({ error: "Unauthenticated" }); }
@@ -89,8 +106,12 @@ app.get("/v1/jobs", async (request, reply) => {
     const parsed = dayInput.safeParse(request.query);
     if (!parsed.success) return reply.code(400).send({ error: "A valid date is required." });
     const user = await currentUser(request);
-    return jobs.filter(job => job.plumberId === user.id && job.date === parsed.data.date);
-  } catch { return reply.code(401).send({ error: "Unauthenticated" }); }
+    const stored = await blakeStore<{ jobs: WorkforceJob[] }>("/workforce/jobs", { email: user.email, date: parsed.data.date });
+    return stored.jobs;
+  } catch (error) {
+    request.log.error(error, "Workforce jobs lookup failed");
+    return reply.code(401).send({ error: "Unauthenticated" });
+  }
 });
 app.get("/v1/jobs/:jobId", async (request, reply) => {
   try {
