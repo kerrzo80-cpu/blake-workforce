@@ -18,6 +18,7 @@ const blakeScheduleInput = z.object({ jobs: z.array(z.object({ plumberEmail: z.s
 const secret = new TextEncoder().encode(process.env.WORKFORCE_JWT_SECRET ?? "development-only-secret-change-before-deploy");
 const demoMode = process.env.WORKFORCE_DEMO_MODE === "true";
 const blakeSyncSecret = process.env.BLAKE_SYNC_SECRET;
+const blakeTimeConfirmationUrl = process.env.BLAKE_TIME_CONFIRMATION_URL ?? "https://insightful-lark-403.eu-west-1.convex.site/workforce/time-confirmations";
 
 const users: WorkforceUser[] = demoMode ? [{
   id: "workforce-user-demo", email: "plumber@example.test", passwordHash: bcrypt.hashSync("change-me", 12), name: "Demo Plumber", role: "plumber",
@@ -40,6 +41,18 @@ async function currentUser(request: FastifyRequest) {
 }
 
 function account(user: WorkforceUser) { return { user: { name: user.name, role: user.role }, organisation: { name: user.organisation.name, purchasePermission: user.organisation.purchasePermission } }; }
+
+function minutesFromClock(value: string) {
+  const match = /^([01]\\d|2[0-3]):([0-5]\\d)$/.exec(value.trim());
+  return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+}
+
+function scheduledMinutes(value: string) {
+  const [start, finish] = value.split("-");
+  const startMinutes = minutesFromClock(start ?? "");
+  const finishMinutes = minutesFromClock(finish ?? "");
+  return startMinutes !== null && finishMinutes !== null && finishMinutes > startMinutes ? finishMinutes - startMinutes : 0;
+}
 
 const app = Fastify({ logger: true });
 await app.register(cors, { origin: process.env.WORKFORCE_ALLOWED_ORIGIN ?? false });
@@ -105,9 +118,39 @@ app.post("/v1/jobs/:jobId/time-confirmations", async (request, reply) => {
     const job = jobs.find(item => item.id === (request.params as { jobId: string }).jobId && item.plumberId === user.id);
     const parsed = timeInput.safeParse(request.body);
     if (!job || !parsed.success) return reply.code(400).send({ error: "Invalid time confirmation." });
-    submissions.push({ type: "time-confirmation", jobId: job.id, createdAt: new Date().toISOString(), data: parsed.data });
-    return reply.code(201).send({ ok: true });
-  } catch { return reply.code(401).send({ error: "Unauthenticated" }); }
+    const startMinutes = minutesFromClock(parsed.data.start);
+    const finishMinutes = minutesFromClock(parsed.data.finish);
+    if (startMinutes === null || finishMinutes === null || finishMinutes <= startMinutes) {
+      return reply.code(400).send({ error: "Enter a valid start and finish time." });
+    }
+    if (!blakeSyncSecret) return reply.code(503).send({ error: "Time return is not configured." });
+
+    const submittedAt = new Date().toISOString();
+    const payload = {
+      workforceEntryId: `time-${job.id}-${user.id}-${submittedAt}`,
+      plumberEmail: user.email,
+      jobReference: job.reference,
+      costCentre: job.costCentres[0] ?? "Unassigned",
+      workDate: job.date,
+      scheduledMinutes: scheduledMinutes(job.scheduledTime),
+      actualMinutes: finishMinutes - startMinutes,
+      amendmentReason: parsed.data.note,
+    };
+    const response = await fetch(blakeTimeConfirmationUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-blake-sync-secret": blakeSyncSecret },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      request.log.error({ statusCode: response.status }, "Blake timesheet return failed");
+      return reply.code(502).send({ error: "Could not send your time to Blake. Please try again." });
+    }
+    submissions.push({ type: "time-confirmation", jobId: job.id, createdAt: submittedAt, data: { ...parsed.data, returnedToBlake: true } });
+    return reply.code(201).send({ ok: true, status: "pending-office-review" });
+  } catch (error) {
+    request.log.error(error, "Time confirmation failed");
+    return reply.code(401).send({ error: "Unauthenticated" });
+  }
 });
 app.post("/v1/jobs/:jobId/stop-go", async (request, reply) => {
   try {
