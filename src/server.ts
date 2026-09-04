@@ -14,8 +14,10 @@ const dayInput = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
 const purchaseOrderInput = z.object({ costCentre: z.string().min(1), supplier: z.string().min(1), description: z.string().min(1), quantity: z.number().positive(), cost: z.number().nonnegative() });
 const timeInput = z.object({ start: z.string().min(1), finish: z.string().min(1), note: z.string().max(500).optional() });
 const stopGoInput = z.object({ gate: z.string().min(1), answer: z.enum(["pass", "stop"]), note: z.string().max(500).optional() });
+const blakeScheduleInput = z.object({ jobs: z.array(z.object({ plumberEmail: z.string().email(), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), reference: z.string().min(1), customer: z.string().min(1), site: z.string().min(1), scheduledTime: z.string().min(1), costCentres: z.array(z.string().min(1)).min(1) })) });
 const secret = new TextEncoder().encode(process.env.WORKFORCE_JWT_SECRET ?? "development-only-secret-change-before-deploy");
 const demoMode = process.env.WORKFORCE_DEMO_MODE === "true";
+const blakeSyncSecret = process.env.BLAKE_SYNC_SECRET;
 
 const users: WorkforceUser[] = demoMode ? [{
   id: "workforce-user-demo", email: "plumber@example.test", passwordHash: bcrypt.hashSync("change-me", 12), name: "Demo Plumber", role: "plumber",
@@ -44,6 +46,21 @@ await app.register(cors, { origin: process.env.WORKFORCE_ALLOWED_ORIGIN ?? false
 
 app.get("/", async () => ({ ok: true, service: "blake-workforce-api", mode: demoMode ? "demo" : "production" }));
 app.get("/health", async () => ({ ok: true, service: "blake-workforce-api", mode: demoMode ? "demo" : "production" }));
+app.post("/v1/integrations/blake/schedules", async (request, reply) => {
+  if (!blakeSyncSecret || request.headers["x-blake-sync-secret"] !== blakeSyncSecret) return reply.code(401).send({ error: "Unauthorised schedule sync." });
+  const parsed = blakeScheduleInput.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: "Invalid schedule payload." });
+  let imported = 0;
+  for (const incoming of parsed.data.jobs) {
+    const plumber = users.find(user => user.email.toLowerCase() === incoming.plumberEmail.toLowerCase());
+    if (!plumber) continue;
+    const existingIndex = jobs.findIndex(job => job.plumberId === plumber.id && job.reference === incoming.reference && job.date === incoming.date);
+    const synced: WorkforceJob = { id: existingIndex >= 0 ? jobs[existingIndex].id : `blake-${incoming.reference}-${incoming.date}`, plumberId: plumber.id, date: incoming.date, reference: incoming.reference, customer: incoming.customer, site: incoming.site, scheduledTime: incoming.scheduledTime, costCentres: incoming.costCentres };
+    if (existingIndex >= 0) jobs[existingIndex] = synced; else jobs.push(synced);
+    imported += 1;
+  }
+  return { imported, skipped: parsed.data.jobs.length - imported };
+});
 app.post("/v1/auth/sign-in", async (request, reply) => {
   const parsed = signInInput.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "Invalid email or password." });
