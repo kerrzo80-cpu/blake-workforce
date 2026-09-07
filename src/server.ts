@@ -75,16 +75,7 @@ app.post("/v1/integrations/blake/schedules", async (request, reply) => {
   const parsed = blakeScheduleInput.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "Invalid schedule payload." });
   await blakeStore("/workforce/schedules", parsed.data);
-  let imported = 0;
-  for (const incoming of parsed.data.jobs) {
-    const plumber = users.find(user => user.email.toLowerCase() === incoming.plumberEmail.toLowerCase());
-    if (!plumber) continue;
-    const existingIndex = jobs.findIndex(job => job.plumberId === plumber.id && job.reference === incoming.reference && job.date === incoming.date);
-    const synced: WorkforceJob = { id: existingIndex >= 0 ? jobs[existingIndex].id : `blake-${incoming.reference}-${incoming.date}`, plumberId: plumber.id, date: incoming.date, reference: incoming.reference, customer: incoming.customer, site: incoming.site, scheduledTime: incoming.scheduledTime, costCentres: incoming.costCentres };
-    if (existingIndex >= 0) jobs[existingIndex] = synced; else jobs.push(synced);
-    imported += 1;
-  }
-  return { imported, skipped: parsed.data.jobs.length - imported };
+  return { imported: parsed.data.jobs.length, skipped: 0 };
 });
 app.post("/v1/auth/activate", async (request, reply) => {
   const parsed = activationInput.safeParse(request.body);
@@ -130,14 +121,14 @@ app.get("/v1/jobs", async (request, reply) => {
 app.get("/v1/jobs/:jobId", async (request, reply) => {
   try {
     const user = await currentUser(request);
-    const job = jobs.find(item => item.id === (request.params as { jobId: string }).jobId && item.plumberId === user.id);
+    const { job } = await assignedJob(user, (request.params as { jobId: string }).jobId);
     return job ?? reply.code(404).send({ error: "Job not found." });
   } catch { return reply.code(401).send({ error: "Unauthenticated" }); }
 });
 app.post("/v1/jobs/:jobId/purchase-orders", async (request, reply) => {
   try {
     const user = await currentUser(request);
-    const job = jobs.find(item => item.id === (request.params as { jobId: string }).jobId && item.plumberId === user.id);
+    const { job } = await assignedJob(user, (request.params as { jobId: string }).jobId);
     if (!job) return reply.code(404).send({ error: "Job not found." });
     const parsed = purchaseOrderInput.safeParse(request.body);
     if (!parsed.success || !job.costCentres.includes(parsed.data.costCentre)) return reply.code(400).send({ error: "Choose one of your scheduled cost centres." });
@@ -150,7 +141,7 @@ app.post("/v1/jobs/:jobId/purchase-orders", async (request, reply) => {
 app.post("/v1/jobs/:jobId/time-confirmations", async (request, reply) => {
   try {
     const user = await currentUser(request);
-    const job = jobs.find(item => item.id === (request.params as { jobId: string }).jobId && item.plumberId === user.id);
+    const { job } = await assignedJob(user, (request.params as { jobId: string }).jobId);
     const parsed = timeInput.safeParse(request.body);
     if (!job || !parsed.success) return reply.code(400).send({ error: "Invalid time confirmation." });
     const startMinutes = minutesFromClock(parsed.data.start);
@@ -190,7 +181,7 @@ app.post("/v1/jobs/:jobId/time-confirmations", async (request, reply) => {
 app.post("/v1/jobs/:jobId/stop-go", async (request, reply) => {
   try {
     const user = await currentUser(request);
-    const job = jobs.find(item => item.id === (request.params as { jobId: string }).jobId && item.plumberId === user.id);
+    const { job } = await assignedJob(user, (request.params as { jobId: string }).jobId);
     const parsed = stopGoInput.safeParse(request.body);
     if (!job || !parsed.success) return reply.code(400).send({ error: "Invalid stop/go record." });
     submissions.push({ type: "stop-go", jobId: job.id, createdAt: new Date().toISOString(), data: parsed.data });
