@@ -12,9 +12,10 @@ type WorkforceJob = { id: string; plumberId: string; date: string; reference: st
 const signInInput = z.object({ email: z.string().email(), password: z.string().min(1) });
 const activationInput = z.object({ code: z.string().uuid(), password: z.string().min(12).max(128) });
 const dayInput = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
-const purchaseOrderInput = z.object({ costCentre: z.string().min(1), supplier: z.string().min(1), description: z.string().min(1), quantity: z.number().positive(), cost: z.number().nonnegative() });
-const timeInput = z.object({ start: z.string().min(1), finish: z.string().min(1), note: z.string().max(500).optional() });
-const stopGoInput = z.object({ gate: z.string().min(1), answer: z.enum(["pass", "stop"]), note: z.string().max(500).optional() });
+const jobDateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const purchaseOrderInput = z.object({ jobDate: jobDateInput, costCentre: z.string().min(1), supplier: z.string().min(1), description: z.string().min(1), quantity: z.number().positive(), cost: z.number().nonnegative() });
+const timeInput = z.object({ jobDate: jobDateInput, start: z.string().min(1), finish: z.string().min(1), note: z.string().max(500).optional() });
+const stopGoInput = z.object({ jobDate: jobDateInput, gate: z.string().min(1), answer: z.enum(["pass", "stop"]), note: z.string().max(500).optional() });
 const blakeScheduleInput = z.object({ jobs: z.array(z.object({ plumberEmail: z.string().email(), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), reference: z.string().min(1), customer: z.string().min(1), site: z.string().min(1), scheduledTime: z.string().min(1), costCentres: z.array(z.string().min(1)).min(1) })) });
 const secret = new TextEncoder().encode(process.env.WORKFORCE_JWT_SECRET ?? "development-only-secret-change-before-deploy");
 const demoMode = process.env.WORKFORCE_DEMO_MODE === "true";
@@ -51,6 +52,14 @@ async function blakeStore<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${blakeWorkforceStoreUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-blake-sync-secret": blakeSyncSecret }, body: JSON.stringify(body) });
   if (!response.ok) throw new Error(`BLAKE_STORE_${response.status}`);
   return await response.json() as T;
+}
+
+async function assignedJob(user: WorkforceUser, jobId: string, jobDate: string) {
+  const stored = await blakeStore<{ jobs: WorkforceJob[] }>("/workforce/jobs", {
+    email: user.email,
+    date: jobDate,
+  });
+  return { job: stored.jobs.find(job => job.id === jobId) ?? null };
 }
 
 function minutesFromClock(value: string) {
@@ -121,17 +130,20 @@ app.get("/v1/jobs", async (request, reply) => {
 app.get("/v1/jobs/:jobId", async (request, reply) => {
   try {
     const user = await currentUser(request);
-    const { job } = await assignedJob(user, (request.params as { jobId: string }).jobId);
-    return job ?? reply.code(404).send({ error: "Job not found." });
+    const query = dayInput.safeParse(request.query);
+    if (!query.success) return reply.code(400).send({ error: "A valid job date is required." });
+    const result = await assignedJob(user, (request.params as { jobId: string }).jobId, query.data.date);
+    return result.job ?? reply.code(404).send({ error: "Job not found." });
   } catch { return reply.code(401).send({ error: "Unauthenticated" }); }
 });
 app.post("/v1/jobs/:jobId/purchase-orders", async (request, reply) => {
   try {
     const user = await currentUser(request);
-    const { job } = await assignedJob(user, (request.params as { jobId: string }).jobId);
-    if (!job) return reply.code(404).send({ error: "Job not found." });
     const parsed = purchaseOrderInput.safeParse(request.body);
-    if (!parsed.success || !job.costCentres.includes(parsed.data.costCentre)) return reply.code(400).send({ error: "Choose one of your scheduled cost centres." });
+    if (!parsed.success) return reply.code(400).send({ error: "Enter the purchase order details." });
+    const { job } = await assignedJob(user, (request.params as { jobId: string }).jobId, parsed.data.jobDate);
+    if (!job) return reply.code(404).send({ error: "Job not found." });
+    if (!job.costCentres.includes(parsed.data.costCentre)) return reply.code(400).send({ error: "Choose one of your scheduled cost centres." });
     const status = user.organisation.purchasePermission === "create" ? "created" : "requested";
     const reference = `${status === "created" ? "PO" : "POR"}-${String(submissions.length + 1).padStart(5, "0")}`;
     submissions.push({ type: "purchase-order", jobId: job.id, createdAt: new Date().toISOString(), data: { ...parsed.data, status, reference } });
@@ -141,9 +153,10 @@ app.post("/v1/jobs/:jobId/purchase-orders", async (request, reply) => {
 app.post("/v1/jobs/:jobId/time-confirmations", async (request, reply) => {
   try {
     const user = await currentUser(request);
-    const { job } = await assignedJob(user, (request.params as { jobId: string }).jobId);
     const parsed = timeInput.safeParse(request.body);
-    if (!job || !parsed.success) return reply.code(400).send({ error: "Invalid time confirmation." });
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid time confirmation." });
+    const { job } = await assignedJob(user, (request.params as { jobId: string }).jobId, parsed.data.jobDate);
+    if (!job) return reply.code(404).send({ error: "Job not found." });
     const startMinutes = minutesFromClock(parsed.data.start);
     const finishMinutes = minutesFromClock(parsed.data.finish);
     if (startMinutes === null || finishMinutes === null || finishMinutes <= startMinutes) {
@@ -181,9 +194,10 @@ app.post("/v1/jobs/:jobId/time-confirmations", async (request, reply) => {
 app.post("/v1/jobs/:jobId/stop-go", async (request, reply) => {
   try {
     const user = await currentUser(request);
-    const { job } = await assignedJob(user, (request.params as { jobId: string }).jobId);
     const parsed = stopGoInput.safeParse(request.body);
-    if (!job || !parsed.success) return reply.code(400).send({ error: "Invalid stop/go record." });
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid stop/go record." });
+    const { job } = await assignedJob(user, (request.params as { jobId: string }).jobId, parsed.data.jobDate);
+    if (!job) return reply.code(404).send({ error: "Job not found." });
     submissions.push({ type: "stop-go", jobId: job.id, createdAt: new Date().toISOString(), data: parsed.data });
     return reply.code(201).send({ ok: true, action: parsed.data.answer === "stop" ? "work-stopped" : "recorded" });
   } catch { return reply.code(401).send({ error: "Unauthenticated" }); }
