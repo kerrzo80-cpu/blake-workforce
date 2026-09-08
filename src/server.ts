@@ -22,7 +22,7 @@ const demoMode = process.env.WORKFORCE_DEMO_MODE === "true";
 const blakeSyncSecret = process.env.BLAKE_SYNC_SECRET;
 const blakeTimeConfirmationUrl = process.env.BLAKE_TIME_CONFIRMATION_URL ?? "https://insightful-lark-403.eu-west-1.convex.site/workforce/time-confirmations";
 const blakeWorkforceStoreUrl = process.env.BLAKE_WORKFORCE_STORE_URL ?? "https://insightful-lark-403.eu-west-1.convex.site";
-const blakeAuthUrl = process.env.BLAKE_AUTH_URL ?? blakeWorkforceStoreUrl.replace(/\\.convex\\.site$/, ".convex.cloud");
+const blakeAuthUrl = process.env.BLAKE_AUTH_URL ?? blakeWorkforceStoreUrl.replace(/\.convex\.site$/, ".convex.cloud");
 
 const users: WorkforceUser[] = demoMode ? [{
   id: "workforce-user-demo", email: "plumber@example.test", passwordHash: bcrypt.hashSync("change-me", 12), name: "Demo Plumber", role: "plumber",
@@ -69,7 +69,7 @@ async function verifyBlakeCredentials(email: string, password: string) {
     }),
     signal: AbortSignal.timeout(45000),
   });
-  if (!response.ok) return false;
+  if (!response.ok) throw new Error("BLAKE_AUTH_UNAVAILABLE");
   const result = await response.json().catch(() => null) as { status?: string; value?: { tokens?: { token?: string } | null } } | null;
   return result?.status === "success" && Boolean(result.value?.tokens?.token);
 }
