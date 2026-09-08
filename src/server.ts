@@ -1,8 +1,9 @@
 import cors from "@fastify/cors";
-import Fastify, { type FastifyRequest } from "fastify";
+import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
 import { z } from "zod";
+import { createHash } from "node:crypto";
 
 type Role = "plumber" | "manager" | "office";
 type PurchasePermission = "create" | "request";
@@ -13,8 +14,8 @@ const signInInput = z.object({ email: z.string().email(), password: z.string().m
 const activationInput = z.object({ code: z.string().uuid(), password: z.string().min(12).max(128) });
 const dayInput = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
 const jobDateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-const purchaseOrderInput = z.object({ jobDate: jobDateInput, costCentre: z.string().min(1), supplier: z.string().min(1), description: z.string().min(1), quantity: z.number().positive(), cost: z.number().nonnegative() });
-const timeInput = z.object({ jobDate: jobDateInput, start: z.string().min(1), finish: z.string().min(1), note: z.string().max(500).optional() });
+const purchaseOrderInput = z.object({ jobDate: jobDateInput, key: z.string().min(1).max(200).optional(), taskId: z.string().optional(), costCentre: z.string().min(1), supplier: z.string().min(1), description: z.string().min(1).max(2000), quantity: z.number().positive().max(10000), cost: z.number().nonnegative().max(1000000), vatRate: z.number().optional() });
+const timeInput = z.object({ jobDate: jobDateInput, taskId: z.string().optional(), start: z.string().min(1), finish: z.string().min(1), note: z.string().max(500).optional() });
 const stopGoInput = z.object({ jobDate: jobDateInput, gate: z.string().min(1), answer: z.enum(["pass", "stop"]), note: z.string().max(500).optional() });
 const blakeScheduleInput = z.object({ jobs: z.array(z.object({ plumberEmail: z.string().email(), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), reference: z.string().min(1), customer: z.string().min(1), site: z.string().min(1), scheduledTime: z.string().min(1), costCentres: z.array(z.string().min(1)).min(1) })) });
 const secret = new TextEncoder().encode(process.env.WORKFORCE_JWT_SECRET ?? "development-only-secret-change-before-deploy");
@@ -28,7 +29,6 @@ const users: WorkforceUser[] = demoMode ? [{
   organisation: { id: "ewg", name: "Errol Watson Group", purchasePermission: "create" },
 }] : [];
 const jobs: WorkforceJob[] = demoMode ? [{ id: "job-demo-1", plumberId: "workforce-user-demo", date: "2026-09-04", reference: "JB-DEMO-001", customer: "Demo customer", site: "12 Example Street", scheduledTime: "08:00", costCentres: ["Bathroom · Plumbing"] }] : [];
-const submissions: Array<{ type: string; jobId: string; createdAt: string; data: unknown }> = [];
 
 async function makeToken(user: WorkforceUser) {
   return new SignJWT({ role: user.role, organisationId: user.organisation.id, email: user.email }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime("8h").sign(secret);
@@ -41,7 +41,7 @@ async function currentUser(request: FastifyRequest) {
   const email = typeof verified.payload.email === "string" ? verified.payload.email : undefined;
   if (!email) throw new Error("UNAUTHENTICATED");
   const stored = await blakeStore<{ account: WorkforceUser | null }>("/workforce/accounts/authenticate", { email });
-  if (!stored.account) throw new Error("UNAUTHENTICATED");
+  if (!stored.account || stored.account.id !== verified.payload.sub || stored.account.organisation.id !== verified.payload.organisationId) throw new Error("UNAUTHENTICATED");
   return stored.account;
 }
 
@@ -49,36 +49,35 @@ function account(user: WorkforceUser) { return { user: { name: user.name, role: 
 
 async function blakeStore<T>(path: string, body: unknown): Promise<T> {
   if (!blakeSyncSecret) throw new Error("BLAKE_STORE_NOT_CONFIGURED");
-  const response = await fetch(`${blakeWorkforceStoreUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-blake-sync-secret": blakeSyncSecret }, body: JSON.stringify(body) });
-  if (!response.ok) throw new Error(`BLAKE_STORE_${response.status}`);
+  const response = await fetch(`${blakeWorkforceStoreUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-blake-sync-secret": blakeSyncSecret }, body: JSON.stringify(body), signal: AbortSignal.timeout(45000) });
+  if (!response.ok) {
+    const error = await response.json().catch(() => null) as { error?: string } | null;
+    throw new StoreError(response.status, response.status === 400 && error?.error ? error.error : "Blake is temporarily unavailable. Please try again.");
+  }
   return await response.json() as T;
 }
 
 async function assignedJob(user: WorkforceUser, jobId: string, jobDate: string) {
-  const stored = await blakeStore<{ jobs: WorkforceJob[] }>("/workforce/jobs", {
-    email: user.email,
+  const jobs = await blakeStore<WorkforceJob[]>("/workforce/mobile/jobs", {
+    ...actor(user),
     date: jobDate,
   });
-  return { job: stored.jobs.find(job => job.id === jobId) ?? null };
+  return { job: jobs.find(job => job.id === jobId) ?? null };
 }
 
-function minutesFromClock(value: string) {
-  const match = /^([01]\\d|2[0-3]):([0-5]\\d)$/.exec(value.trim());
-  return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+class StoreError extends Error { constructor(public status: number, message: string) { super(message); } }
+function actor(user: WorkforceUser) { return { accountId: user.id, companyId: user.organisation.id }; }
+function failure(error: unknown, request: FastifyRequest, reply: FastifyReply) {
+  const unauthorised = error instanceof Error && (error.message === "UNAUTHENTICATED" || ("code" in error && /^ERR_(JWT|JWS|JOSE)/.test(String(error.code))));
+  if (unauthorised) return reply.code(401).send({ error: "Please sign in again." });
+  request.log.error(error, "Workforce request failed");
+  return reply.code(error instanceof StoreError && error.status === 400 ? 400 : 503).send({ error: error instanceof StoreError ? error.message : "Blake is temporarily unavailable. Please try again." });
 }
-
-function scheduledMinutes(value: string) {
-  const [start, finish] = value.split("-");
-  const startMinutes = minutesFromClock(start ?? "");
-  const finishMinutes = minutesFromClock(finish ?? "");
-  return startMinutes !== null && finishMinutes !== null && finishMinutes > startMinutes ? finishMinutes - startMinutes : 0;
-}
-
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, bodyLimit: 15 * 1024 * 1024 });
 await app.register(cors, { origin: process.env.WORKFORCE_ALLOWED_ORIGIN ?? false });
 
 app.get("/", async () => ({ ok: true, service: "blake-workforce-api", mode: demoMode ? "demo" : "production" }));
-app.get("/health", async () => ({ ok: true, service: "blake-workforce-api", mode: demoMode ? "demo" : "production" }));
+app.get("/health", async () => ({ ok: true, service: "blake-workforce-api", revision: "durable-workflows-v1", mode: demoMode ? "demo" : "production" }));
 app.post("/v1/integrations/blake/schedules", async (request, reply) => {
   if (!blakeSyncSecret || request.headers["x-blake-sync-secret"] !== blakeSyncSecret) return reply.code(401).send({ error: "Unauthorised schedule sync." });
   const parsed = blakeScheduleInput.safeParse(request.body);
@@ -113,18 +112,17 @@ app.post("/v1/auth/sign-in", async (request, reply) => {
   }
 });
 app.get("/v1/me", async (request, reply) => {
-  try { return account(await currentUser(request)); } catch { return reply.code(401).send({ error: "Unauthenticated" }); }
+  try { return account(await currentUser(request)); } catch (error) { return failure(error, request, reply); }
 });
 app.get("/v1/jobs", async (request, reply) => {
   try {
     const parsed = dayInput.safeParse(request.query);
     if (!parsed.success) return reply.code(400).send({ error: "A valid date is required." });
     const user = await currentUser(request);
-    const stored = await blakeStore<{ jobs: WorkforceJob[] }>("/workforce/jobs", { email: user.email, date: parsed.data.date });
-    return stored.jobs;
+    return await blakeStore<WorkforceJob[]>("/workforce/mobile/jobs", { ...actor(user), date: parsed.data.date });
   } catch (error) {
     request.log.error(error, "Workforce jobs lookup failed");
-    return reply.code(401).send({ error: "Unauthenticated" });
+    return failure(error, request, reply);
   }
 });
 app.get("/v1/jobs/:jobId", async (request, reply) => {
@@ -134,74 +132,78 @@ app.get("/v1/jobs/:jobId", async (request, reply) => {
     if (!query.success) return reply.code(400).send({ error: "A valid job date is required." });
     const result = await assignedJob(user, (request.params as { jobId: string }).jobId, query.data.date);
     return result.job ?? reply.code(404).send({ error: "Job not found." });
-  } catch { return reply.code(401).send({ error: "Unauthenticated" }); }
+  } catch (error) { return failure(error, request, reply); }
 });
 app.post("/v1/jobs/:jobId/purchase-orders", async (request, reply) => {
   try {
     const user = await currentUser(request);
     const parsed = purchaseOrderInput.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Enter the purchase order details." });
-    const { job } = await assignedJob(user, (request.params as { jobId: string }).jobId, parsed.data.jobDate);
-    if (!job) return reply.code(404).send({ error: "Job not found." });
-    if (!job.costCentres.includes(parsed.data.costCentre)) return reply.code(400).send({ error: "Choose one of your scheduled cost centres." });
-    const status = user.organisation.purchasePermission === "create" ? "created" : "requested";
-    const reference = `${status === "created" ? "PO" : "POR"}-${String(submissions.length + 1).padStart(5, "0")}`;
-    submissions.push({ type: "purchase-order", jobId: job.id, createdAt: new Date().toISOString(), data: { ...parsed.data, status, reference } });
-    return { reference, status };
-  } catch { return reply.code(401).send({ error: "Unauthenticated" }); }
+    const jobId = (request.params as { jobId: string }).jobId;
+    // Legacy builds have no retry identifier. Identical legacy requests resolve
+    // to the same durable receipt instead of creating duplicate financials.
+    const key = parsed.data.key ?? createHash("sha256").update(JSON.stringify({ ...parsed.data, jobId })).digest("hex");
+    return await blakeStore("/workforce/mobile/purchase", { ...parsed.data, key, ...actor(user), jobId });
+  } catch (error) { return failure(error, request, reply); }
 });
 app.post("/v1/jobs/:jobId/time-confirmations", async (request, reply) => {
   try {
     const user = await currentUser(request);
     const parsed = timeInput.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "Invalid time confirmation." });
-    const { job } = await assignedJob(user, (request.params as { jobId: string }).jobId, parsed.data.jobDate);
-    if (!job) return reply.code(404).send({ error: "Job not found." });
-    const startMinutes = minutesFromClock(parsed.data.start);
-    const finishMinutes = minutesFromClock(parsed.data.finish);
-    if (startMinutes === null || finishMinutes === null || finishMinutes <= startMinutes) {
-      return reply.code(400).send({ error: "Enter a valid start and finish time." });
-    }
-    if (!blakeSyncSecret) return reply.code(503).send({ error: "Time return is not configured." });
-
-    const submittedAt = new Date().toISOString();
-    const payload = {
-      workforceEntryId: `time-${job.id}-${user.id}-${submittedAt}`,
-      plumberEmail: user.email,
-      jobReference: job.reference,
-      costCentre: job.costCentres[0] ?? "Unassigned",
-      workDate: job.date,
-      scheduledMinutes: scheduledMinutes(job.scheduledTime),
-      actualMinutes: finishMinutes - startMinutes,
-      amendmentReason: parsed.data.note,
-    };
-    const response = await fetch(blakeTimeConfirmationUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-blake-sync-secret": blakeSyncSecret },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) {
-      request.log.error({ statusCode: response.status }, "Blake timesheet return failed");
-      return reply.code(502).send({ error: "Could not send your time to Blake. Please try again." });
-    }
-    submissions.push({ type: "time-confirmation", jobId: job.id, createdAt: submittedAt, data: { ...parsed.data, returnedToBlake: true } });
-    return reply.code(201).send({ ok: true, status: "pending-office-review" });
-  } catch (error) {
-    request.log.error(error, "Time confirmation failed");
-    return reply.code(401).send({ error: "Unauthenticated" });
-  }
+    if (!parsed.success) return reply.code(400).send({ error: "Enter valid time details." });
+    const result = await blakeStore("/workforce/mobile/time", { ...parsed.data, ...actor(user), jobId: (request.params as { jobId: string }).jobId });
+    return reply.code(201).send(result);
+  } catch (error) { return failure(error, request, reply); }
 });
+// Old hard-coded forms cannot satisfy the office-assigned template. Do not
+// accept them or show a false saved/office-notified confirmation.
 app.post("/v1/jobs/:jobId/stop-go", async (request, reply) => {
+  try { await currentUser(request); return reply.code(409).send({ error: "Update Blake Workforce to complete the forms assigned by your office." }); }
+  catch (error) { return failure(error, request, reply); }
+});
+for (const route of ["files", "forms"]) app.get(`/v1/jobs/:jobId/${route}`, async (request, reply) => {
   try {
     const user = await currentUser(request);
-    const parsed = stopGoInput.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "Invalid stop/go record." });
-    const { job } = await assignedJob(user, (request.params as { jobId: string }).jobId, parsed.data.jobDate);
-    if (!job) return reply.code(404).send({ error: "Job not found." });
-    submissions.push({ type: "stop-go", jobId: job.id, createdAt: new Date().toISOString(), data: parsed.data });
-    return reply.code(201).send({ ok: true, action: parsed.data.answer === "stop" ? "work-stopped" : "recorded" });
-  } catch { return reply.code(401).send({ error: "Unauthenticated" }); }
+    const query = dayInput.safeParse(request.query);
+    if (!query.success) return reply.code(400).send({ error: "A valid job date is required." });
+    return await blakeStore(`/workforce/mobile/${route}`, { ...actor(user), jobId: (request.params as { jobId: string }).jobId, jobDate: query.data.date });
+  } catch (error) { return failure(error, request, reply); }
+});
+const formInput = z.object({
+  jobDate: jobDateInput, key: z.string().min(1).max(200), templateId: z.string().min(1),
+  customerType: z.enum(["domestic", "landlord"]),
+  answers: z.array(z.object({ questionId: z.string().min(1), value: z.string().max(2000) })).max(200),
+  warning: z.object({ classification: z.enum(["immediately_dangerous", "at_risk"]), faultDescription: z.string().min(1).max(2000), remedialAction: z.string().max(2000).optional(), isolationStatus: z.enum(["isolated", "permission_refused", "not_required"]), customerNotified: z.boolean(), customerAcknowledged: z.boolean() }).optional(),
+});
+app.post("/v1/jobs/:jobId/forms", async (request, reply) => {
+  try {
+    const user = await currentUser(request);
+    const parsed = formInput.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Complete the form details." });
+    return reply.code(201).send(await blakeStore("/workforce/mobile/forms/submit", { ...parsed.data, ...actor(user), jobId: (request.params as { jobId: string }).jobId }));
+  } catch (error) { return failure(error, request, reply); }
+});
+const fileInput = z.object({ jobDate: jobDateInput, fileName: z.string().min(1).max(180), mimeType: z.enum(["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"]), base64: z.string().min(1).max(14 * 1024 * 1024) });
+app.post("/v1/jobs/:jobId/files", async (request, reply) => {
+  try {
+    const user = await currentUser(request);
+    const parsed = fileInput.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Choose a photo or PDF no larger than 10 MB." });
+    return reply.code(201).send(await blakeStore("/workforce/mobile/files/upload", { ...parsed.data, ...actor(user), jobId: (request.params as { jobId: string }).jobId }));
+  } catch (error) { return failure(error, request, reply); }
+});
+for (const [route, backend] of [["suppliers", "suppliers"], ["purchase-requests", "requests"]]) app.get(`/v1/${route}`, async (request, reply) => {
+  try { const user = await currentUser(request); return await blakeStore(`/workforce/mobile/${backend}`, actor(user)); }
+  catch (error) { return failure(error, request, reply); }
+});
+app.post("/v1/purchase-requests/:requestId/review", async (request, reply) => {
+  try {
+    const user = await currentUser(request);
+    const parsed = z.object({ decision: z.enum(["approved", "declined"]), reason: z.string().max(500).optional() }).safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Choose an approval decision." });
+    return await blakeStore("/workforce/mobile/review", { ...parsed.data, ...actor(user), requestId: (request.params as { requestId: string }).requestId });
+  } catch (error) { return failure(error, request, reply); }
 });
 
 if (!demoMode && !process.env.WORKFORCE_JWT_SECRET) throw new Error("WORKFORCE_JWT_SECRET must be set outside demo mode.");
-await app.listen({ port: Number(process.env.PORT ?? 4100), host: "0.0.0.0" });
+await app.listen({ port: Number(process.env.PORT ?? 4100), host: process.env.WORKFORCE_HOST ?? "0.0.0.0" });
