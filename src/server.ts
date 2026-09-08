@@ -204,7 +204,7 @@ app.post("/v1/jobs/:jobId/files", async (request, reply) => {
   } catch (error) { return failure(error, request, reply); }
 });
 for (const [route, backend] of [["suppliers", "suppliers"], ["purchase-requests", "requests"]]) app.get(`/v1/${route}`, async (request, reply) => {
-  try { const user = await currentUser(request); return await blakeStore(`/workforce/mobile/${backend}`, actor(user)); }
+  try { const user = await currentUser(request); return await blakeStore(`/workforce/mobile/${backend}`, { ...actor(user), ...(route === "suppliers" ? {search: String((request.query as {search?:string}).search ?? "").slice(0,100)} : {}) }); }
   catch (error) { return failure(error, request, reply); }
 });
 app.post("/v1/purchase-requests/:requestId/review", async (request, reply) => {
