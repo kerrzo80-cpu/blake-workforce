@@ -1,6 +1,5 @@
 import cors from "@fastify/cors";
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
-import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
 import { z } from "zod";
 import { createHash } from "node:crypto";
@@ -11,7 +10,6 @@ type WorkforceUser = { id: string; email: string; passwordHash: string; name: st
 type WorkforceJob = { id: string; plumberId: string; date: string; reference: string; customer: string; site: string; scheduledTime: string; costCentres: string[] };
 
 const signInInput = z.object({ email: z.string().email(), password: z.string().min(1) });
-const activationInput = z.object({ code: z.string().uuid(), password: z.string().min(12).max(128) });
 const dayInput = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
 const jobDateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const purchaseOrderInput = z.object({ jobDate: jobDateInput, key: z.string().min(1).max(200).optional(), taskId: z.string().optional(), costCentre: z.string().min(1), supplier: z.string().min(1), description: z.string().min(1).max(2000), quantity: z.number().positive().max(10000), cost: z.number().nonnegative().max(1000000), vatRate: z.number().optional() });
@@ -23,6 +21,7 @@ const demoMode = process.env.WORKFORCE_DEMO_MODE === "true";
 const blakeSyncSecret = process.env.BLAKE_SYNC_SECRET;
 const blakeTimeConfirmationUrl = process.env.BLAKE_TIME_CONFIRMATION_URL ?? "https://insightful-lark-403.eu-west-1.convex.site/workforce/time-confirmations";
 const blakeWorkforceStoreUrl = process.env.BLAKE_WORKFORCE_STORE_URL ?? "https://insightful-lark-403.eu-west-1.convex.site";
+const blakeAuthUrl = process.env.BLAKE_AUTH_URL ?? blakeWorkforceStoreUrl.replace(/\\.convex\\.site$/, ".convex.cloud");
 
 const users: WorkforceUser[] = demoMode ? [{
   id: "workforce-user-demo", email: "plumber@example.test", passwordHash: bcrypt.hashSync("change-me", 12), name: "Demo Plumber", role: "plumber",
@@ -57,6 +56,23 @@ async function blakeStore<T>(path: string, body: unknown): Promise<T> {
   return await response.json() as T;
 }
 
+
+async function verifyBlakeCredentials(email: string, password: string) {
+  const response = await fetch(`${blakeAuthUrl}/api/action`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      path: "auth:signIn",
+      args: { provider: "password", params: { flow: "signIn", email: email.trim().toLowerCase(), password } },
+      format: "json",
+    }),
+    signal: AbortSignal.timeout(45000),
+  });
+  if (!response.ok) return false;
+  const result = await response.json().catch(() => null) as { status?: string; value?: { tokens?: { token?: string } | null } } | null;
+  return result?.status === "success" && Boolean(result.value?.tokens?.token);
+}
+
 async function assignedJob(user: WorkforceUser, jobId: string, jobDate: string) {
   const jobs = await blakeStore<WorkforceJob[]>("/workforce/mobile/jobs", {
     ...actor(user),
@@ -85,30 +101,24 @@ app.post("/v1/integrations/blake/schedules", async (request, reply) => {
   await blakeStore("/workforce/schedules", parsed.data);
   return { imported: parsed.data.jobs.length, skipped: 0 };
 });
-app.post("/v1/auth/activate", async (request, reply) => {
-  const parsed = activationInput.safeParse(request.body);
-  if (!parsed.success) return reply.code(400).send({ error: "Enter your setup code and a password of at least 12 characters." });
-  try {
-    const passwordHash = await bcrypt.hash(parsed.data.password, 12);
-    const activated = await blakeStore<{ account: { email: string; name: string } }>("/workforce/invites/activate", { code: parsed.data.code, passwordHash });
-    return reply.code(201).send({ ok: true, email: activated.account.email, name: activated.account.name });
-  } catch (error) {
-    request.log.error(error, "Workforce account activation failed");
-    return reply.code(400).send({ error: "That setup code has expired or has already been used." });
-  }
-});
-
 app.post("/v1/auth/sign-in", async (request, reply) => {
   const parsed = signInInput.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "Invalid email or password." });
   try {
-    const stored = await blakeStore<{ account: WorkforceUser | null }>("/workforce/accounts/authenticate", { email: parsed.data.email });
+    if (!await verifyBlakeCredentials(parsed.data.email, parsed.data.password)) {
+      return reply.code(401).send({ error: "Invalid email or password." });
+    }
+    const stored = await blakeStore<{ account: WorkforceUser | null }>("/workforce/accounts/provision-from-blake", {
+      email: parsed.data.email,
+    });
     const user = stored.account;
-    if (!user || !await bcrypt.compare(parsed.data.password, user.passwordHash)) return reply.code(401).send({ error: "Invalid email or password." });
+    if (!user || !user.organisation.id) {
+      return reply.code(403).send({ error: "You do not have Workforce access. Ask your Blake administrator to add you to staff." });
+    }
     return { ...account(user), accessToken: await makeToken(user) };
   } catch (error) {
-    request.log.error(error, "Workforce account lookup failed");
-    return reply.code(503).send({ error: "Workforce accounts are temporarily unavailable." });
+    request.log.error(error, "Workforce Blake sign-in failed");
+    return reply.code(503).send({ error: "Blake is temporarily unavailable. Please try again." });
   }
 });
 app.get("/v1/me", async (request, reply) => {
