@@ -91,7 +91,9 @@ function failure(error: unknown, request: FastifyRequest, reply: FastifyReply) {
   return reply.code(error instanceof StoreError && error.status === 400 ? 400 : 503).send({ error: error instanceof StoreError ? error.message : "Blake is temporarily unavailable. Please try again." });
 }
 const app = Fastify({ logger: true, bodyLimit: 15 * 1024 * 1024 });
-await app.register(cors, { origin: process.env.WORKFORCE_ALLOWED_ORIGIN ?? false });
+const allowedWebOrigins = (process.env.WORKFORCE_ALLOWED_ORIGIN ?? "")
+  .split(",").map(origin => origin.trim()).filter(Boolean);
+await app.register(cors, { origin: allowedWebOrigins.includes("*") ? "*" : allowedWebOrigins.length ? allowedWebOrigins : false });
 
 app.get("/", async () => ({ ok: true, service: "blake-workforce-api", mode: demoMode ? "demo" : "production" }));
 app.get("/health", async () => ({ ok: true, service: "blake-workforce-api", revision: "work-timer-signoff-v1", mode: demoMode ? "demo" : "production" }));

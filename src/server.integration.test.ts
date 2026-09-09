@@ -34,7 +34,7 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
   const backendPort = (backend.address() as { port: number }).port;
   const reserve = createServer(); reserve.listen(0, "127.0.0.1"); await once(reserve, "listening");
   const port = (reserve.address() as { port: number }).port; await new Promise<void>(resolve => reserve.close(() => resolve()));
-  const child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), WORKFORCE_HOST: "127.0.0.1", WORKFORCE_DEMO_MODE: "false", WORKFORCE_JWT_SECRET: secret, BLAKE_SYNC_SECRET: syncSecret, BLAKE_WORKFORCE_STORE_URL: `http://127.0.0.1:${backendPort}` }, stdio: ["ignore", "ignore", "pipe"] });
+  const child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), WORKFORCE_HOST: "127.0.0.1", WORKFORCE_DEMO_MODE: "false", WORKFORCE_ALLOWED_ORIGIN: "https://old.example.test, https://new.example.test", WORKFORCE_JWT_SECRET: secret, BLAKE_SYNC_SECRET: syncSecret, BLAKE_WORKFORCE_STORE_URL: `http://127.0.0.1:${backendPort}` }, stdio: ["ignore", "ignore", "pipe"] });
   let startupError = ""; child.stderr?.on("data", data => { startupError += String(data); });
   const base = `http://127.0.0.1:${port}`;
   try {
@@ -45,6 +45,16 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     assert.ok(ready, `Gateway must start: ${startupError}`);
+    for (const origin of ["https://old.example.test", "https://new.example.test"]) {
+      const preflight = await fetch(`${base}/v1/auth/sign-in`, { method: "OPTIONS", headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "content-type" } });
+      assert.equal(preflight.status, 204);
+      assert.equal(preflight.headers.get("access-control-allow-origin"), origin);
+      const protectedJobs = await fetch(`${base}/v1/jobs?date=2026-09-08`, { headers: { origin } });
+      assert.equal(protectedJobs.status, 401);
+      assert.equal(protectedJobs.headers.get("access-control-allow-origin"), origin);
+    }
+    const untrustedOrigin = await fetch(`${base}/health`, { headers: { origin: "https://untrusted.example.test" } });
+    assert.equal(untrustedOrigin.headers.get("access-control-allow-origin"), null);
     assert.equal((await fetch(`${base}/v1/jobs?date=2026-09-08`)).status, 401);
     const signIn = await fetch(`${base}/v1/auth/sign-in`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "test@example.test", password }) });
     assert.equal(signIn.status, 200);
