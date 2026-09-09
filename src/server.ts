@@ -94,7 +94,7 @@ const app = Fastify({ logger: true, bodyLimit: 15 * 1024 * 1024 });
 await app.register(cors, { origin: process.env.WORKFORCE_ALLOWED_ORIGIN ?? false });
 
 app.get("/", async () => ({ ok: true, service: "blake-workforce-api", mode: demoMode ? "demo" : "production" }));
-app.get("/health", async () => ({ ok: true, service: "blake-workforce-api", revision: "durable-workflows-v1", mode: demoMode ? "demo" : "production" }));
+app.get("/health", async () => ({ ok: true, service: "blake-workforce-api", revision: "work-timer-signoff-v1", mode: demoMode ? "demo" : "production" }));
 app.post("/v1/integrations/blake/schedules", async (request, reply) => {
   if (!blakeSyncSecret || request.headers["x-blake-sync-secret"] !== blakeSyncSecret) return reply.code(401).send({ error: "Unauthorised schedule sync." });
   const parsed = blakeScheduleInput.safeParse(request.body);
@@ -166,6 +166,31 @@ app.post("/v1/jobs/:jobId/time-confirmations", async (request, reply) => {
     return reply.code(201).send(result);
   } catch (error) { return failure(error, request, reply); }
 });
+const signatureInput = z.array(z.array(z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) })).min(1).max(2500)).min(1).max(50).refine(strokes => strokes.reduce((n, s) => n + s.length, 0) <= 2500);
+const workRoutes = {
+  "work/start": z.object({ jobDate: jobDateInput, taskId: z.string().min(1), key: z.string().min(1).max(200) }),
+  "work/stop": z.object({ sessionId: z.string().min(1), expectedVersion: z.number().int().positive(), key: z.string().min(1).max(200) }),
+  "work/amend": z.object({ jobDate: jobDateInput, taskId: z.string().min(1), sessionId: z.string().optional(), expectedVersion: z.number().int().positive().optional(), key: z.string().min(1).max(200), start: z.string(), finish: z.string().optional(), finishDate: jobDateInput.optional(), reason: z.string().trim().min(1).max(500) }),
+  "completions/complete": z.object({ jobDate: jobDateInput, key: z.string().min(1).max(200), taskIds: z.array(z.string()).max(100), wholeJob: z.boolean(), workSummary: z.string().trim().min(1).max(2000), customerName: z.string().max(120).optional(), signature: signatureInput.optional(), consentAccepted: z.boolean().optional(), unavailableReason: z.string().max(500).optional() }),
+  "completions/sign": z.object({ jobDate: jobDateInput, key: z.string().min(1).max(200), completionId: z.string().min(1), customerName: z.string().trim().min(1).max(120), signature: signatureInput, consentAccepted: z.boolean() }),
+};
+for (const route of ["work", "completions"]) app.get(`/v1/jobs/:jobId/${route}`, async (request, reply) => {
+  try {
+    const user = await currentUser(request);
+    const query = dayInput.safeParse(request.query);
+    if (!query.success) return reply.code(400).send({ error: "Choose a valid visit date." });
+    return await blakeStore(`/workforce/mobile/${route}`, { ...actor(user), jobId: (request.params as { jobId: string }).jobId, jobDate: query.data.date });
+  } catch (error) { return failure(error, request, reply); }
+});
+for (const [route, validator] of Object.entries(workRoutes)) app.post(`/v1/jobs/:jobId/${route}`, async (request, reply) => {
+  try {
+    const user = await currentUser(request);
+    const input = validator.safeParse(request.body);
+    if (!input.success) return reply.code(400).send({ error: "Check the visit or customer sign-off details." });
+    return await blakeStore(`/workforce/mobile/${route}`, { ...input.data, ...actor(user), ...(route === "work/stop" ? {} : { jobId: (request.params as { jobId: string }).jobId }) });
+  } catch (error) { return failure(error, request, reply); }
+});
+
 // Old hard-coded forms cannot satisfy the office-assigned template. Do not
 // accept them or show a false saved/office-notified confirmation.
 app.post("/v1/jobs/:jobId/stop-go", async (request, reply) => {
