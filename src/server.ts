@@ -12,6 +12,10 @@ type WorkforceJob = { id: string; plumberId: string; date: string; reference: st
 
 const signInInput = z.object({ email: z.string().email(), password: z.string().min(1) });
 const dayInput = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
+const pushTokenInput = z.object({
+  token: z.string().regex(/^(Exponent|Expo)PushToken\\[[^\\]]+\\]$/),
+  platform: z.enum(["ios", "android"]),
+});
 const jobDateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const purchaseOrderInput = z.object({ referenceOnly: z.boolean().optional(), jobDate: jobDateInput, key: z.string().min(1).max(200).optional(), taskId: z.string().optional(), costCentre: z.string().min(1), supplier: z.string().min(1), description: z.string().min(1).max(2000).default("Materials collection — details to follow"), quantity: z.number().positive().max(10000).default(1), cost: z.number().nonnegative().max(1000000).default(0), vatRate: z.number().optional() });
 const timeInput = z.object({ jobDate: jobDateInput, taskId: z.string().optional(), start: z.string().min(1), finish: z.string().min(1), note: z.string().max(500).optional() });
