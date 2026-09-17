@@ -124,6 +124,33 @@ app.post("/v1/auth/sign-in", async (request, reply) => {
     return reply.code(503).send({ error: "Blake is temporarily unavailable. Please try again." });
   }
 });
+app.post("/v1/push-tokens", async (request, reply) => {
+  try {
+    const user = await currentUser(request);
+    const parsed = pushTokenInput.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid notification token." });
+    const result = await blakeStore<{ registered: boolean }>("/workforce/push/register", {
+      ...actor(user),
+      ...parsed.data,
+    });
+    if (!result.registered) return reply.code(403).send({ error: "Workforce account unavailable." });
+    return { registered: true };
+  } catch (error) {
+    return failure(error, request, reply);
+  }
+});
+app.delete("/v1/push-tokens", async (request, reply) => {
+  try {
+    await currentUser(request);
+    const parsed = pushTokenInput.pick({ token: true }).safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid notification token." });
+    await blakeStore("/workforce/push/unregister", parsed.data);
+    return { unregistered: true };
+  } catch (error) {
+    return failure(error, request, reply);
+  }
+});
+
 app.get("/v1/me", async (request, reply) => {
   try { return account(await currentUser(request)); } catch (error) { return failure(error, request, reply); }
 });
