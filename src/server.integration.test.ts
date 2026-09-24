@@ -83,7 +83,8 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
       assert.equal(sent.jobId,route==="work/stop"?undefined:"job-1");
       assert.equal((await fetch(`${base}/v1/jobs/job-1/${route}`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(input)})).status,401);
     }
-    const badAmend=await fetch(`${base}/v1/jobs/job-1/work/amend`,{method:"POST",headers,body:JSON.stringify({jobDate:"2026-09-09",taskId:"task-1",start:"08:00",finish:"09:00",reason:"",key:"empty"})});assert.equal(badAmend.status,400);
+    const badAmend=await fetch(`${base}/v1/jobs/job-1/work/amend`,{method:"POST",headers,body:JSON.stringify({jobDate:"2026-09-09",taskId:"task-1",start:"08:00",finish:"09:00",notes:"",key:"empty"})});assert.equal(badAmend.status,200);
+    const tooLong = await fetch(`${base}/v1/jobs/job-1/work/amend`,{method:"POST",headers,body:JSON.stringify({jobDate:"2026-09-09",taskId:"task-1",start:"08:00",finish:"09:00",notes:"x".repeat(501),key:"long"})}); assert.equal(tooLong.status,400);
     const oldForm = await fetch(`${base}/v1/jobs/job-1/stop-go`, { method: "POST", headers, body: JSON.stringify({ jobDate: "2026-09-08", gate: "Fake gate", answer: "pass" }) });
     assert.equal(oldForm.status, 409);
     const forged = await new SignJWT({ email: "test@example.test", organisationId: "company-1" }).setProtectedHeader({ alg: "HS256" }).setSubject("different-account").setExpirationTime("5m").sign(new TextEncoder().encode(secret));
