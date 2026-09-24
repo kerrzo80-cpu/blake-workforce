@@ -180,6 +180,15 @@ app.post("/v1/price-work/claims", async (request, reply) => {
     return await blakeStore("/workforce/mobile/price-work/submit", { ...actor(user), ...parsed.data });
   } catch (error) { return failure(error, request, reply); }
 });
+const extraInput = z.object({jobId:z.string().min(1),plot:z.string().min(1).max(60),requestId:z.string().min(1).max(120),description:z.string().trim().min(1).max(500),workDate:jobDateInput,hoursHundredths:z.number().int().min(1).max(2400)});
+app.get("/v1/price-work/extras",async(request,reply)=>{
+  try{const parsed=z.object({jobId:z.string().min(1)}).safeParse(request.query);if(!parsed.success)return reply.code(400).send({error:"Choose a valid site."});const user=await currentUser(request);return await blakeStore("/workforce/mobile/price-work/extras",{...actor(user),...parsed.data});}
+  catch(error){return failure(error,request,reply);}
+});
+app.post("/v1/price-work/extras",async(request,reply)=>{
+  try{const parsed=extraInput.safeParse(request.body);if(!parsed.success)return reply.code(400).send({error:"Enter a plot, description, date and valid hours."});const user=await currentUser(request);return await blakeStore("/workforce/mobile/price-work/extras/submit",{...actor(user),...parsed.data});}
+  catch(error){return failure(error,request,reply);}
+});
 app.get("/v1/jobs", async (request, reply) => {
   try {
     const parsed = dayInput.safeParse(request.query);
