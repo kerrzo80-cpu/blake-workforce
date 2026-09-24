@@ -100,7 +100,7 @@ const allowedWebOrigins = (process.env.WORKFORCE_ALLOWED_ORIGIN ?? "")
 await app.register(cors, { origin: allowedWebOrigins.includes("*") ? "*" : allowedWebOrigins.length ? allowedWebOrigins : false });
 
 app.get("/", async () => ({ ok: true, service: "blake-workforce-api", mode: demoMode ? "demo" : "production" }));
-app.get("/health", async () => ({ ok: true, service: "blake-workforce-api", revision: "work-timer-signoff-v1", mode: demoMode ? "demo" : "production" }));
+app.get("/health", async () => ({ ok: true, service: "blake-workforce-api", revision: "manual-time-notes-v1", mode: demoMode ? "demo" : "production" }));
 app.post("/v1/integrations/blake/schedules", async (request, reply) => {
   if (!blakeSyncSecret || request.headers["x-blake-sync-secret"] !== blakeSyncSecret) return reply.code(401).send({ error: "Unauthorised schedule sync." });
   const parsed = blakeScheduleInput.safeParse(request.body);
@@ -203,7 +203,7 @@ const signatureInput = z.array(z.array(z.object({ x: z.number().min(0).max(1), y
 const workRoutes = {
   "work/start": z.object({ jobDate: jobDateInput, taskId: z.string().min(1), key: z.string().min(1).max(200) }),
   "work/stop": z.object({ sessionId: z.string().min(1), expectedVersion: z.number().int().positive(), key: z.string().min(1).max(200) }),
-  "work/amend": z.object({ jobDate: jobDateInput, taskId: z.string().min(1), sessionId: z.string().optional(), expectedVersion: z.number().int().positive().optional(), key: z.string().min(1).max(200), start: z.string(), finish: z.string().optional(), finishDate: jobDateInput.optional(), reason: z.string().trim().min(1).max(500) }),
+  "work/amend": z.object({ jobDate: jobDateInput, taskId: z.string().min(1), sessionId: z.string().optional(), expectedVersion: z.number().int().positive().optional(), key: z.string().min(1).max(200), start: z.string(), finish: z.string().optional(), finishDate: jobDateInput.optional(), notes: z.string().trim().max(500).optional(), reason: z.string().trim().max(500).optional(), legacyEntryId: z.string().min(1).optional() }),
   "completions/complete": z.object({ jobDate: jobDateInput, key: z.string().min(1).max(200), taskIds: z.array(z.string()).max(100), wholeJob: z.boolean(), workSummary: z.string().trim().min(1).max(2000), customerName: z.string().max(120).optional(), signature: signatureInput.optional(), consentAccepted: z.boolean().optional(), unavailableReason: z.string().max(500).optional() }),
   "completions/sign": z.object({ jobDate: jobDateInput, key: z.string().min(1).max(200), completionId: z.string().min(1), customerName: z.string().trim().min(1).max(120), signature: signatureInput, consentAccepted: z.boolean() }),
 };
