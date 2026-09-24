@@ -158,6 +158,28 @@ app.delete("/v1/push-tokens", async (request, reply) => {
 app.get("/v1/me", async (request, reply) => {
   try { return account(await currentUser(request)); } catch (error) { return failure(error, request, reply); }
 });
+const priceWorkSiteInput = z.object({ jobId: z.string().min(1).optional() });
+const priceWorkClaimInput = z.object({
+  jobId: z.string().min(1), requestId: z.string().min(1).max(120),
+  workDate: jobDateInput, note: z.string().max(1000).default(""),
+  lines: z.array(z.object({ itemId: z.string().min(1), expectedRevision: z.number().int().nonnegative(), amountPence: z.number().int().positive() })).min(1).max(100),
+});
+app.get("/v1/price-work", async (request, reply) => {
+  try {
+    const parsed = priceWorkSiteInput.safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: "Choose a valid site." });
+    const user = await currentUser(request);
+    return await blakeStore("/workforce/mobile/price-work", { ...actor(user), ...parsed.data });
+  } catch (error) { return failure(error, request, reply); }
+});
+app.post("/v1/price-work/claims", async (request, reply) => {
+  try {
+    const parsed = priceWorkClaimInput.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Choose priced work and enter a valid claim date." });
+    const user = await currentUser(request);
+    return await blakeStore("/workforce/mobile/price-work/submit", { ...actor(user), ...parsed.data });
+  } catch (error) { return failure(error, request, reply); }
+});
 app.get("/v1/jobs", async (request, reply) => {
   try {
     const parsed = dayInput.safeParse(request.query);
