@@ -28,6 +28,8 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     else if (req.url === "/workforce/mobile/purchase") res.end(JSON.stringify({ reference: "POR-TEST", status: "requested" }));
     else if (req.url?.startsWith("/workforce/mobile/work/") || req.url?.startsWith("/workforce/mobile/completions/")) res.end(JSON.stringify({id:"saved-record",active:false,status:"signed"}));
     else if (req.url === "/workforce/mobile/time") res.end(JSON.stringify({ ok: true, status: "pending-office-review" }));
+    else if (req.url === "/workforce/mobile/price-work") res.end(JSON.stringify({ employeeName: "Test", sites: [{ id: "site-1", title: "Rowett", reference: "JB-ROWETT" }], selectedJobId: body.jobId ?? null, items: [] }));
+    else if (req.url === "/workforce/mobile/price-work/submit") res.end(JSON.stringify({ submissionId: "submission-1", reused: false }));
     else { res.statusCode = 400; res.end(JSON.stringify({ error: "Rejected test operation" })); }
   });
   backend.listen(0, "127.0.0.1"); await once(backend, "listening");
@@ -62,6 +64,20 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     const headers = { "content-type": "application/json", authorization: `Bearer ${session.accessToken}` };
     const jobs = await fetch(`${base}/v1/jobs?date=2026-09-08`, { headers });
     assert.equal(jobs.status, 200);
+    assert.equal((await fetch(`${base}/v1/price-work`)).status, 401);
+    const sites = await fetch(`${base}/v1/price-work`, { headers });
+    assert.equal(sites.status, 200);
+    assert.equal((await sites.json() as { sites: Array<{ id: string }> }).sites[0].id, "site-1");
+    const priceList = await fetch(`${base}/v1/price-work?jobId=site-1&companyId=forged`, { headers });
+    assert.equal(priceList.status, 200);
+    const listArgs = calls.filter(call => call.path === "/workforce/mobile/price-work").at(-1)!.body;
+    assert.deepEqual(listArgs, { accountId: "account-1", companyId: "company-1", jobId: "site-1" });
+    const claim = { jobId: "site-1", requestId: "retry-claim", workDate: "2026-09-08", note: "", lines: [{ itemId: "item-1", expectedRevision: 1, amountPence: 60000 }], accountId: "forged", companyId: "forged" };
+    assert.equal((await fetch(`${base}/v1/price-work/claims`, { method: "POST", headers, body: JSON.stringify(claim) })).status, 200);
+    const claimArgs = calls.filter(call => call.path === "/workforce/mobile/price-work/submit").at(-1)!.body;
+    assert.equal(claimArgs.accountId, "account-1"); assert.equal(claimArgs.companyId, "company-1");
+    assert.equal(claimArgs.requestId, "retry-claim"); assert.equal((claimArgs.lines as Array<{ amountPence: number }>)[0].amountPence, 60000);
+    assert.equal((await fetch(`${base}/v1/price-work/claims`, { method: "POST", headers, body: JSON.stringify({ ...claim, lines: [{ ...claim.lines[0], amountPence: -1 }] }) })).status, 400);
     const purchase = { jobDate: "2026-09-08", key: "retry-1", costCentre: "Bathroom", supplier: "Test supplier", description: "Test item", quantity: 1, cost: 10, companyId: "attack-company", accountId: "attack-account" };
     const post = await fetch(`${base}/v1/jobs/job-1/purchase-orders`, { method: "POST", headers, body: JSON.stringify(purchase) });
     assert.equal(post.status, 200); assert.deepEqual(await post.json(), { reference: "POR-TEST", status: "requested" });
