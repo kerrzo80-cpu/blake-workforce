@@ -100,7 +100,13 @@ const allowedWebOrigins = (process.env.WORKFORCE_ALLOWED_ORIGIN ?? "")
 await app.register(cors, { origin: allowedWebOrigins.includes("*") ? "*" : allowedWebOrigins.length ? allowedWebOrigins : false });
 
 app.get("/", async () => ({ ok: true, service: "blake-workforce-api", mode: demoMode ? "demo" : "production" }));
-app.get("/health", async () => ({ ok: true, service: "blake-workforce-api", revision: "manual-time-notes-v1", mode: demoMode ? "demo" : "production" }));
+app.get("/health", async () => ({
+  ok: true,
+  service: "blake-workforce-api",
+  revision: "price-work-store-diagnostic-v1",
+  mode: demoMode ? "demo" : "production",
+  blakeStoreHost: new URL(blakeWorkforceStoreUrl).host,
+}));
 app.post("/v1/integrations/blake/schedules", async (request, reply) => {
   if (!blakeSyncSecret || request.headers["x-blake-sync-secret"] !== blakeSyncSecret) return reply.code(401).send({ error: "Unauthorised schedule sync." });
   const parsed = blakeScheduleInput.safeParse(request.body);
