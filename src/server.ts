@@ -20,7 +20,7 @@ const jobDateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const purchaseOrderInput = z.object({ referenceOnly: z.boolean().optional(), jobDate: jobDateInput, key: z.string().min(1).max(200).optional(), taskId: z.string().optional(), costCentre: z.string().min(1), supplier: z.string().min(1), description: z.string().min(1).max(2000).default("Materials collection — details to follow"), quantity: z.number().positive().max(10000).default(1), cost: z.number().nonnegative().max(1000000).default(0), vatRate: z.number().optional() });
 const timeInput = z.object({ jobDate: jobDateInput, taskId: z.string().optional(), start: z.string().min(1), finish: z.string().min(1), note: z.string().max(500).optional() });
 const stopGoInput = z.object({ jobDate: jobDateInput, gate: z.string().min(1), answer: z.enum(["pass", "stop"]), note: z.string().max(500).optional() });
-const blakeScheduleInput = z.object({ jobs: z.array(z.object({ plumberEmail: z.string().email(), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), reference: z.string().min(1), customer: z.string().min(1), site: z.string().min(1), scheduledTime: z.string().min(1), costCentres: z.array(z.string().min(1)).min(1) })) });
+const blakeScheduleInput = z.object({ companyId: z.string().min(1).max(100), jobs: z.array(z.object({ plumberEmail: z.string().email(), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), reference: z.string().min(1), customer: z.string().min(1), site: z.string().min(1), scheduledTime: z.string().min(1), costCentres: z.array(z.string().min(1)).min(1) })).max(500) });
 const secret = new TextEncoder().encode(process.env.WORKFORCE_JWT_SECRET ?? "development-only-secret-change-before-deploy");
 const demoMode = process.env.WORKFORCE_DEMO_MODE === "true";
 const blakeSyncSecret = process.env.BLAKE_SYNC_SECRET;
@@ -103,7 +103,8 @@ app.get("/", async () => ({ ok: true, service: "blake-workforce-api", mode: demo
 app.get("/health", async () => ({
   ok: true,
   service: "blake-workforce-api",
-  revision: "price-work-store-diagnostic-v1",
+  revision: "tenant-scoped-schedule-sync-v1",
+  commit: process.env.RENDER_GIT_COMMIT ?? null,
   mode: demoMode ? "demo" : "production",
   blakeStoreHost: new URL(blakeWorkforceStoreUrl).host,
 }));

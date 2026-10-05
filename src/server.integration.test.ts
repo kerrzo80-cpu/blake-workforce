@@ -28,6 +28,7 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     else if (req.url === "/workforce/mobile/purchase") res.end(JSON.stringify({ reference: "POR-TEST", status: "requested" }));
     else if (req.url?.startsWith("/workforce/mobile/work/") || req.url?.startsWith("/workforce/mobile/completions/")) res.end(JSON.stringify({id:"saved-record",active:false,status:"signed"}));
     else if (req.url === "/workforce/mobile/time") res.end(JSON.stringify({ ok: true, status: "pending-office-review" }));
+    else if (req.url === "/workforce/schedules") res.end(JSON.stringify({ imported: 0 }));
     else if (req.url === "/workforce/mobile/price-work") res.end(JSON.stringify({ employeeName: "Test", sites: [{ id: "site-1", title: "Rowett", reference: "JB-ROWETT" }], selectedJobId: body.jobId ?? null, items: [] }));
     else if (req.url === "/workforce/mobile/price-work/submit") res.end(JSON.stringify({ submissionId: "submission-1", reused: false }));
     else { res.statusCode = 400; res.end(JSON.stringify({ error: "Rejected test operation" })); }
@@ -47,6 +48,10 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     assert.ok(ready, `Gateway must start: ${startupError}`);
+    const syncHeaders = { "content-type": "application/json", "x-blake-sync-secret": syncSecret };
+    assert.equal((await fetch(`${base}/v1/integrations/blake/schedules`, { method: "POST", headers: syncHeaders, body: JSON.stringify({ jobs: [] }) })).status, 400);
+    assert.equal((await fetch(`${base}/v1/integrations/blake/schedules`, { method: "POST", headers: syncHeaders, body: JSON.stringify({ companyId: "company-2", jobs: [] }) })).status, 200);
+    assert.deepEqual(calls.find(call => call.path === "/workforce/schedules")!.body, { companyId: "company-2", jobs: [] });
     for (const origin of ["https://old.example.test", "https://new.example.test"]) {
       const preflight = await fetch(`${base}/v1/auth/sign-in`, { method: "OPTIONS", headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "content-type" } });
       assert.equal(preflight.status, 204);
