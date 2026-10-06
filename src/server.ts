@@ -34,19 +34,24 @@ const users: WorkforceUser[] = demoMode ? [{
 }] : [];
 const jobs: WorkforceJob[] = demoMode ? [{ id: "job-demo-1", plumberId: "workforce-user-demo", date: "2026-09-04", reference: "JB-DEMO-001", customer: "Demo customer", site: "12 Example Street", scheduledTime: "08:00", costCentres: ["Bathroom · Plumbing"] }] : [];
 
-async function makeToken(user: WorkforceUser) {
-  return new SignJWT({ role: user.role, organisationId: user.organisation.id, email: user.email }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime("8h").sign(secret);
+async function makeToken(user: WorkforceUser, tokenType: "access" | "refresh" = "access") {
+  return new SignJWT({ tokenType, role: user.role, organisationId: user.organisation.id, email: user.email }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime(tokenType === "refresh" ? "30d" : "8h").sign(secret);
 }
 
-async function currentUser(request: FastifyRequest) {
-  const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+async function tokenUser(token: string | undefined, tokenType: "access" | "refresh") {
   if (!token) throw new Error("UNAUTHENTICATED");
-  const verified = await jwtVerify(token, secret);
+  const verified = await jwtVerify(token, secret, { algorithms: ["HS256"] });
+  // Existing access tokens predate the explicit token type.
+  if (verified.payload.tokenType !== tokenType && !(tokenType === "access" && verified.payload.tokenType === undefined)) throw new Error("UNAUTHENTICATED");
   const email = typeof verified.payload.email === "string" ? verified.payload.email : undefined;
   if (!email) throw new Error("UNAUTHENTICATED");
   const stored = await blakeStore<{ account: WorkforceUser | null }>("/workforce/accounts/authenticate", { email });
   if (!stored.account || stored.account.id !== verified.payload.sub || stored.account.organisation.id !== verified.payload.organisationId) throw new Error("UNAUTHENTICATED");
   return stored.account;
+}
+
+async function currentUser(request: FastifyRequest) {
+  return tokenUser(request.headers.authorization?.replace(/^Bearer\s+/i, ""), "access");
 }
 
 function account(user: WorkforceUser) { return { user: { name: user.name, role: user.role }, organisation: { name: user.organisation.name, purchasePermission: user.organisation.purchasePermission } }; }
@@ -129,10 +134,21 @@ app.post("/v1/auth/sign-in", async (request, reply) => {
     if (!user || !user.organisation.id) {
       return reply.code(403).send({ error: "You do not have Workforce access. Ask your Blake administrator to add you to staff." });
     }
-    return { ...account(user), accessToken: await makeToken(user) };
+    return { ...account(user), accessToken: await makeToken(user), refreshToken: await makeToken(user, "refresh") };
   } catch (error) {
     request.log.error(error, "Workforce Blake sign-in failed");
     return reply.code(503).send({ error: "Blake is temporarily unavailable. Please try again." });
+  }
+});
+app.post("/v1/auth/refresh", async (request, reply) => {
+  const parsed = z.object({ refreshToken: z.string().min(1).max(4000) }).safeParse(request.body);
+  if (!parsed.success) return reply.code(401).send({ error: "Please sign in again." });
+  try {
+    const user = await tokenUser(parsed.data.refreshToken, "refresh");
+    // Do not extend the original 30-day login window on every renewal.
+    return { ...account(user), accessToken: await makeToken(user) };
+  } catch (error) {
+    return failure(error, request, reply);
   }
 });
 app.post("/v1/push-tokens", async (request, reply) => {

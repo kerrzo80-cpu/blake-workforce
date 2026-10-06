@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import bcrypt from "bcryptjs";
-import { SignJWT } from "jose";
+import { SignJWT, decodeJwt } from "jose";
 
 test("HTTP gateway authenticates, scopes writes and reports upstream failures honestly", async () => {
   const password = randomBytes(24).toString("hex");
@@ -13,6 +13,7 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
   const syncSecret = randomBytes(32).toString("hex");
   const passwordHash = await bcrypt.hash(password, 4);
   let unavailable = false;
+  let disabled = false;
   const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
   const backend = createServer(async (req, res) => {
     if(req.url !== "/api/action") assert.equal(req.headers["x-blake-sync-secret"], syncSecret);
@@ -23,7 +24,7 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     res.setHeader("content-type", "application/json");
     if (unavailable) { res.statusCode = 503; res.end(JSON.stringify({ error: "private upstream detail" })); return; }
     if(req.url === "/api/action") {res.end(JSON.stringify({status:"success",value:{tokens:{token:"test-only"}}}));return;}
-    if (req.url === "/workforce/accounts/authenticate" || req.url === "/workforce/accounts/provision-from-blake") res.end(JSON.stringify({ account: body.email === "test@example.test" ? { id: "account-1", email: "test@example.test", passwordHash, name: "Test", role: "plumber", organisation: { id: "company-1", name: "Test", purchasePermission: "request" } } : null }));
+    if (req.url === "/workforce/accounts/authenticate" || req.url === "/workforce/accounts/provision-from-blake") res.end(JSON.stringify({ account: !disabled && body.email === "test@example.test" ? { id: "account-1", email: "test@example.test", passwordHash, name: "Test", role: "plumber", organisation: { id: "company-1", name: "Test", purchasePermission: "request" } } : null }));
     else if (req.url === "/workforce/mobile/jobs") res.end(JSON.stringify([{ id: "job-1", date: body.date, reference: "JB-TEST", costCentres: ["Bathroom"], tasks: [{ id: "task-1", name: "Bathroom" }] }]));
     else if (req.url === "/workforce/mobile/purchase") res.end(JSON.stringify({ reference: "POR-TEST", status: "requested" }));
     else if (req.url?.startsWith("/workforce/mobile/work/") || req.url?.startsWith("/workforce/mobile/completions/")) res.end(JSON.stringify({id:"saved-record",active:false,status:"signed"}));
@@ -65,7 +66,23 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     assert.equal((await fetch(`${base}/v1/jobs?date=2026-09-08`)).status, 401);
     const signIn = await fetch(`${base}/v1/auth/sign-in`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "test@example.test", password }) });
     assert.equal(signIn.status, 200);
-    const session = await signIn.json() as { accessToken: string };
+    const session = await signIn.json() as { accessToken: string; refreshToken: string };
+    const refreshClaims = decodeJwt(session.refreshToken);
+    assert.equal(refreshClaims.tokenType, "refresh");
+    assert.equal(refreshClaims.exp! - refreshClaims.iat!, 30 * 86400);
+    const refresh = () => fetch(`${base}/v1/auth/refresh`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ refreshToken: session.refreshToken }) });
+    const renewed = await refresh();
+    assert.equal(renewed.status, 200);
+    const renewal = await renewed.json() as { accessToken: string; refreshToken?: string };
+    assert.equal(decodeJwt(renewal.accessToken).tokenType, "access");
+    assert.equal(renewal.refreshToken, undefined, "Renewal must not extend the original login window");
+    assert.equal((await fetch(`${base}/v1/me`, { headers: { authorization: `Bearer ${session.refreshToken}` } })).status, 401);
+    assert.equal((await fetch(`${base}/v1/auth/refresh`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ refreshToken: session.accessToken }) })).status, 401);
+    disabled = true;
+    assert.equal((await refresh()).status, 401);
+    disabled = false;
+    const expiredRefresh = await new SignJWT({ tokenType: "refresh", email: "test@example.test", organisationId: "company-1" }).setProtectedHeader({ alg: "HS256" }).setSubject("account-1").setExpirationTime(Math.floor(Date.now() / 1000) - 1).sign(new TextEncoder().encode(secret));
+    assert.equal((await fetch(`${base}/v1/auth/refresh`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ refreshToken: expiredRefresh }) })).status, 401);
     const headers = { "content-type": "application/json", authorization: `Bearer ${session.accessToken}` };
     const jobs = await fetch(`${base}/v1/jobs?date=2026-09-08`, { headers });
     assert.equal(jobs.status, 200);
