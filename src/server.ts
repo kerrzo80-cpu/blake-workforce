@@ -55,7 +55,7 @@ async function currentUser(request: FastifyRequest) {
   return (await tokenUser(request.headers.authorization?.replace(/^Bearer\s+/i, ""), "access")).user;
 }
 
-function account(user: WorkforceUser) { return { user: { name: user.name, role: user.role }, organisation: { name: user.organisation.name, purchasePermission: user.organisation.purchasePermission } }; }
+function account(user: WorkforceUser) { return { user: { id: user.id, name: user.name, role: user.role }, organisation: { name: user.organisation.name, purchasePermission: user.organisation.purchasePermission } }; }
 
 async function blakeStore<T>(path: string, body: unknown): Promise<T> {
   if (!blakeSyncSecret) throw new Error("BLAKE_STORE_NOT_CONFIGURED");
@@ -213,6 +213,30 @@ app.get("/v1/price-work/extras",async(request,reply)=>{
 app.post("/v1/price-work/extras",async(request,reply)=>{
   try{const parsed=extraInput.safeParse(request.body);if(!parsed.success)return reply.code(400).send({error:"Enter a plot, description, date and valid hours."});const user=await currentUser(request);return await blakeStore("/workforce/mobile/price-work/extras/submit",{...actor(user),...parsed.data});}
   catch(error){return failure(error,request,reply);}
+});
+app.get("/v1/unscheduled/jobs", async (request, reply) => {
+  try {
+    const input = z.object({ cursor: z.string().max(4000).optional() }).safeParse(request.query);
+    if (!input.success) return reply.code(400).send({ error: "Invalid page." });
+    const user = await currentUser(request);
+    return await blakeStore("/workforce/mobile/unscheduled/jobs", { ...input.data, ...actor(user) });
+  } catch (error) { return failure(error, request, reply); }
+});
+for (const route of ["tasks", "work"]) app.get(`/v1/unscheduled/jobs/:jobId/${route}`, async (request, reply) => {
+  try {
+    const input = route === "work" ? dayInput.safeParse(request.query) : z.object({}).safeParse(request.query);
+    if (!input.success) return reply.code(400).send({ error: "Choose a valid date." });
+    const user = await currentUser(request);
+    return await blakeStore(`/workforce/mobile/unscheduled/${route}`, { ...actor(user), jobId: (request.params as { jobId: string }).jobId, ...(route === "work" ? { jobDate: (input.data as { date: string }).date } : {}) });
+  } catch (error) { return failure(error, request, reply); }
+});
+app.post("/v1/unscheduled/jobs/:jobId/work/amend", async (request, reply) => {
+  try {
+    const input = z.object({ jobDate: jobDateInput, taskId: z.string().min(1).max(100), key: z.string().min(1).max(200), start: z.string().max(5), finish: z.string().max(5), finishDate: jobDateInput.optional(), notes: z.string().trim().min(1).max(450), sessionId: z.string().min(1).max(100).optional(), expectedVersion: z.number().int().positive().optional() }).safeParse(request.body);
+    if (!input.success) return reply.code(400).send({ error: "Enter a cost centre, start/end times and reason." });
+    const user = await currentUser(request);
+    return await blakeStore("/workforce/mobile/unscheduled/submit", { ...input.data, ...actor(user), jobId: (request.params as { jobId: string }).jobId });
+  } catch (error) { return failure(error, request, reply); }
 });
 app.get("/v1/jobs", async (request, reply) => {
   try {
