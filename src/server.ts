@@ -34,8 +34,9 @@ const users: WorkforceUser[] = demoMode ? [{
 }] : [];
 const jobs: WorkforceJob[] = demoMode ? [{ id: "job-demo-1", plumberId: "workforce-user-demo", date: "2026-09-04", reference: "JB-DEMO-001", customer: "Demo customer", site: "12 Example Street", scheduledTime: "08:00", costCentres: ["Bathroom · Plumbing"] }] : [];
 
-async function makeToken(user: WorkforceUser, tokenType: "access" | "refresh" = "access") {
-  return new SignJWT({ tokenType, role: user.role, organisationId: user.organisation.id, email: user.email }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime(tokenType === "refresh" ? "30d" : "8h").sign(secret);
+async function makeToken(user: WorkforceUser, tokenType: "access" | "refresh" = "access", expiresAt?: number) {
+  const expiry = Math.min(Math.floor(Date.now() / 1000) + (tokenType === "refresh" ? 30 * 86400 : 8 * 3600), expiresAt ?? Infinity);
+  return new SignJWT({ tokenType, role: user.role, organisationId: user.organisation.id, email: user.email }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime(expiry).sign(secret);
 }
 
 async function tokenUser(token: string | undefined, tokenType: "access" | "refresh") {
@@ -47,11 +48,11 @@ async function tokenUser(token: string | undefined, tokenType: "access" | "refre
   if (!email) throw new Error("UNAUTHENTICATED");
   const stored = await blakeStore<{ account: WorkforceUser | null }>("/workforce/accounts/authenticate", { email });
   if (!stored.account || stored.account.id !== verified.payload.sub || stored.account.organisation.id !== verified.payload.organisationId) throw new Error("UNAUTHENTICATED");
-  return stored.account;
+  return { user: stored.account, expiresAt: verified.payload.exp };
 }
 
 async function currentUser(request: FastifyRequest) {
-  return tokenUser(request.headers.authorization?.replace(/^Bearer\s+/i, ""), "access");
+  return (await tokenUser(request.headers.authorization?.replace(/^Bearer\s+/i, ""), "access")).user;
 }
 
 function account(user: WorkforceUser) { return { user: { name: user.name, role: user.role }, organisation: { name: user.organisation.name, purchasePermission: user.organisation.purchasePermission } }; }
@@ -144,9 +145,10 @@ app.post("/v1/auth/refresh", async (request, reply) => {
   const parsed = z.object({ refreshToken: z.string().min(1).max(4000) }).safeParse(request.body);
   if (!parsed.success) return reply.code(401).send({ error: "Please sign in again." });
   try {
-    const user = await tokenUser(parsed.data.refreshToken, "refresh");
+    const { user, expiresAt } = await tokenUser(parsed.data.refreshToken, "refresh");
+    if (!expiresAt) throw new Error("UNAUTHENTICATED");
     // Do not extend the original 30-day login window on every renewal.
-    return { ...account(user), accessToken: await makeToken(user) };
+    return { ...account(user), accessToken: await makeToken(user, "access", expiresAt) };
   } catch (error) {
     return failure(error, request, reply);
   }

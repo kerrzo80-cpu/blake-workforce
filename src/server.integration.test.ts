@@ -76,6 +76,14 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     const renewal = await renewed.json() as { accessToken: string; refreshToken?: string };
     assert.equal(decodeJwt(renewal.accessToken).tokenType, "access");
     assert.equal(renewal.refreshToken, undefined, "Renewal must not extend the original login window");
+    const nearExpiry = Math.floor(Date.now() / 1000) + 120;
+    const shortRefresh = await new SignJWT({ tokenType: "refresh", email: "test@example.test", organisationId: "company-1" }).setProtectedHeader({ alg: "HS256" }).setSubject("account-1").setExpirationTime(nearExpiry).sign(new TextEncoder().encode(secret));
+    const capped = await fetch(`${base}/v1/auth/refresh`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ refreshToken: shortRefresh }) });
+    assert.equal(capped.status, 200);
+    const cappedToken = (await capped.json() as { accessToken: string }).accessToken;
+    assert.equal(decodeJwt(cappedToken).exp, nearExpiry);
+    const { jwtVerify } = await import("jose");
+    await assert.rejects(jwtVerify(cappedToken, new TextEncoder().encode(secret), { currentDate: new Date(nearExpiry * 1000) }), { code: "ERR_JWT_EXPIRED" });
     assert.equal((await fetch(`${base}/v1/me`, { headers: { authorization: `Bearer ${session.refreshToken}` } })).status, 401);
     assert.equal((await fetch(`${base}/v1/auth/refresh`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ refreshToken: session.accessToken }) })).status, 401);
     disabled = true;
