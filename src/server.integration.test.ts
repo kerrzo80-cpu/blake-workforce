@@ -29,6 +29,10 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     else if (req.url === "/workforce/mobile/purchase") res.end(JSON.stringify({ reference: "POR-TEST", status: "requested" }));
     else if (req.url?.startsWith("/workforce/mobile/work/") || req.url?.startsWith("/workforce/mobile/completions/")) res.end(JSON.stringify({id:"saved-record",active:false,status:"signed"}));
     else if (req.url === "/workforce/mobile/time") res.end(JSON.stringify({ ok: true, status: "pending-office-review" }));
+    else if (req.url === "/workforce/mobile/unscheduled/jobs") res.end(JSON.stringify({ jobs: [{ id: "job-1", reference: "JB-TEST" }], cursor: "next", isDone: true }));
+    else if (req.url === "/workforce/mobile/unscheduled/tasks") res.end(JSON.stringify([{ id: "task-1", name: "Bathroom" }]));
+    else if (req.url === "/workforce/mobile/unscheduled/work") res.end(JSON.stringify({ sessions: [], active: null }));
+    else if (req.url === "/workforce/mobile/unscheduled/submit") res.end(JSON.stringify({ id: "saved-unscheduled", active: false, version: 1 }));
     else if (req.url === "/workforce/schedules") res.end(JSON.stringify({ imported: 0 }));
     else if (req.url === "/workforce/mobile/price-work") res.end(JSON.stringify({ employeeName: "Test", sites: [{ id: "site-1", title: "Rowett", reference: "JB-ROWETT" }], selectedJobId: body.jobId ?? null, items: [] }));
     else if (req.url === "/workforce/mobile/price-work/submit") res.end(JSON.stringify({ submissionId: "submission-1", reused: false }));
@@ -92,6 +96,16 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     const expiredRefresh = await new SignJWT({ tokenType: "refresh", email: "test@example.test", organisationId: "company-1" }).setProtectedHeader({ alg: "HS256" }).setSubject("account-1").setExpirationTime(Math.floor(Date.now() / 1000) - 1).sign(new TextEncoder().encode(secret));
     assert.equal((await fetch(`${base}/v1/auth/refresh`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ refreshToken: expiredRefresh }) })).status, 401);
     const headers = { "content-type": "application/json", authorization: `Bearer ${session.accessToken}` };
+    assert.equal((await fetch(`${base}/v1/unscheduled/jobs`)).status, 401);
+    assert.equal((await fetch(`${base}/v1/unscheduled/jobs?cursor=page`, { headers })).status, 200);
+    assert.deepEqual(calls.find(call => call.path === "/workforce/mobile/unscheduled/jobs")!.body, { accountId: "account-1", companyId: "company-1", cursor: "page" });
+    assert.equal((await fetch(`${base}/v1/unscheduled/jobs/job-1/tasks`, { headers })).status, 200);
+    assert.equal((await fetch(`${base}/v1/unscheduled/jobs/job-1/work?date=2026-09-08`, { headers })).status, 200);
+    const unscheduled = { jobDate: "2026-09-08", taskId: "task-1", key: "forgotten-time", start: "08:00", finish: "09:00", notes: "Extra visit", accountId: "foreign", companyId: "foreign" };
+    assert.equal((await fetch(`${base}/v1/unscheduled/jobs/job-1/work/amend`, { method: "POST", headers, body: JSON.stringify(unscheduled) })).status, 200);
+    const posted = calls.find(call => call.path === "/workforce/mobile/unscheduled/submit")!.body;
+    assert.equal(posted.accountId, "account-1"); assert.equal(posted.companyId, "company-1"); assert.equal(posted.jobId, "job-1");
+    assert.equal((await fetch(`${base}/v1/unscheduled/jobs/job-1/work/amend`, { method: "POST", headers, body: JSON.stringify({ ...unscheduled, notes: "" }) })).status, 400);
     const jobs = await fetch(`${base}/v1/jobs?date=2026-09-08`, { headers });
     assert.equal(jobs.status, 200);
     assert.equal((await fetch(`${base}/v1/price-work`)).status, 401);
