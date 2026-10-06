@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
 import { z } from "zod";
 import { createHash } from "node:crypto";
+import { minutesFromClock } from "./clock.js";
 
 type Role = "plumber" | "manager" | "office";
 type PurchasePermission = "create" | "request";
@@ -232,7 +233,8 @@ for (const route of ["tasks", "work"]) app.get(`/v1/unscheduled/jobs/:jobId/${ro
 });
 app.post("/v1/unscheduled/jobs/:jobId/work/amend", async (request, reply) => {
   try {
-    const input = z.object({ jobDate: jobDateInput, taskId: z.string().min(1).max(100), key: z.string().min(1).max(200), start: z.string().max(5), finish: z.string().max(5), finishDate: jobDateInput.optional(), notes: z.string().trim().min(1).max(450), sessionId: z.string().min(1).max(100).optional(), expectedVersion: z.number().int().positive().optional() }).safeParse(request.body);
+    const clockInput = z.string().length(5).refine(value => minutesFromClock(value) !== null);
+    const input = z.object({ jobDate: jobDateInput, taskId: z.string().min(1).max(100), key: z.string().min(1).max(200), start: clockInput, finish: clockInput, finishDate: jobDateInput.optional(), notes: z.string().trim().min(1).max(450), sessionId: z.string().min(1).max(100).optional(), expectedVersion: z.number().int().positive().optional() }).safeParse(request.body);
     if (!input.success) return reply.code(400).send({ error: "Enter a cost centre, start/end times and reason." });
     const user = await currentUser(request);
     return await blakeStore("/workforce/mobile/unscheduled/submit", { ...input.data, ...actor(user), jobId: (request.params as { jobId: string }).jobId });

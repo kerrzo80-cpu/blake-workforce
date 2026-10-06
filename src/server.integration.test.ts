@@ -106,6 +106,11 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     const posted = calls.find(call => call.path === "/workforce/mobile/unscheduled/submit")!.body;
     assert.equal(posted.accountId, "account-1"); assert.equal(posted.companyId, "company-1"); assert.equal(posted.jobId, "job-1");
     assert.equal((await fetch(`${base}/v1/unscheduled/jobs/job-1/work/amend`, { method: "POST", headers, body: JSON.stringify({ ...unscheduled, notes: "" }) })).status, 400);
+    const forwardedBefore = calls.filter(call => call.path === "/workforce/mobile/unscheduled/submit").length;
+    for (const clock of ["", "abc", "24:00", "12:60", "8:00"]) {
+      for (const field of ["start", "finish"]) assert.equal((await fetch(`${base}/v1/unscheduled/jobs/job-1/work/amend`, { method: "POST", headers, body: JSON.stringify({ ...unscheduled, [field]: clock }) })).status, 400);
+    }
+    assert.equal(calls.filter(call => call.path === "/workforce/mobile/unscheduled/submit").length, forwardedBefore);
     const jobs = await fetch(`${base}/v1/jobs?date=2026-09-08`, { headers });
     assert.equal(jobs.status, 200);
     assert.equal((await fetch(`${base}/v1/price-work`)).status, 401);
