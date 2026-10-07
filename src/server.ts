@@ -247,7 +247,6 @@ app.get("/v1/jobs", async (request, reply) => {
     const user = await currentUser(request);
     return await blakeStore<WorkforceJob[]>("/workforce/mobile/jobs", { ...actor(user), date: parsed.data.date });
   } catch (error) {
-    request.log.error(error, "Workforce jobs lookup failed");
     return failure(error, request, reply);
   }
 });
