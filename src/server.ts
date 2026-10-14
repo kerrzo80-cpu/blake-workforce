@@ -259,6 +259,26 @@ app.get("/v1/jobs/:jobId", async (request, reply) => {
     return result.job ?? reply.code(404).send({ error: "Job not found." });
   } catch (error) { return failure(error, request, reply); }
 });
+app.get("/v1/stock", async (request, reply) => {
+  try { const user = await currentUser(request); return await blakeStore("/workforce/mobile/stock", actor(user)); }
+  catch (error) { return failure(error, request, reply); }
+});
+app.post("/v1/stock/replenish", async (request, reply) => {
+  try {
+    const user = await currentUser(request);
+    const input = z.object({ stockLocationId: z.string().min(1), supplierId: z.string().min(1), key: z.string().min(1).max(200) }).safeParse(request.body);
+    if (!input.success) return reply.code(400).send({ error: "Choose your van and supplier." });
+    return await blakeStore("/workforce/mobile/stock/replenish", { ...input.data, ...actor(user) });
+  } catch (error) { return failure(error, request, reply); }
+});
+app.post("/v1/jobs/:jobId/stock-use", async (request, reply) => {
+  try {
+    const user = await currentUser(request);
+    const input = z.object({ jobDate: jobDateInput, stockItemId: z.string().min(1), taskId: z.string().min(1), quantity: z.number().positive().max(1000000), key: z.string().min(1).max(200) }).safeParse(request.body);
+    if (!input.success) return reply.code(400).send({ error: "Choose the material, quantity and cost centre." });
+    return await blakeStore("/workforce/mobile/stock/use", { ...input.data, ...actor(user), jobId: (request.params as { jobId: string }).jobId });
+  } catch (error) { return failure(error, request, reply); }
+});
 app.post("/v1/jobs/:jobId/purchase-orders", async (request, reply) => {
   try {
     const user = await currentUser(request);
@@ -285,7 +305,7 @@ const workRoutes = {
   "work/start": z.object({ jobDate: jobDateInput, taskId: z.string().min(1), key: z.string().min(1).max(200) }),
   "work/stop": z.object({ sessionId: z.string().min(1), expectedVersion: z.number().int().positive(), key: z.string().min(1).max(200) }),
   "work/amend": z.object({ jobDate: jobDateInput, taskId: z.string().min(1), sessionId: z.string().optional(), expectedVersion: z.number().int().positive().optional(), key: z.string().min(1).max(200), start: z.string(), finish: z.string().optional(), finishDate: jobDateInput.optional(), notes: z.string().trim().max(500).optional(), reason: z.string().trim().max(500).optional(), legacyEntryId: z.string().min(1).optional() }),
-  "completions/complete": z.object({ jobDate: jobDateInput, key: z.string().min(1).max(200), taskIds: z.array(z.string()).max(100), wholeJob: z.boolean(), workSummary: z.string().trim().min(1).max(2000), customerName: z.string().max(120).optional(), signature: signatureInput.optional(), consentAccepted: z.boolean().optional(), unavailableReason: z.string().max(500).optional() }),
+  "completions/complete": z.object({ jobDate: jobDateInput, key: z.string().min(1).max(200), taskIds: z.array(z.string()).max(100), wholeJob: z.boolean(), materialsConfirmed: z.boolean().optional(), workSummary: z.string().trim().min(1).max(2000), customerName: z.string().max(120).optional(), signature: signatureInput.optional(), consentAccepted: z.boolean().optional(), unavailableReason: z.string().max(500).optional() }),
   "completions/sign": z.object({ jobDate: jobDateInput, key: z.string().min(1).max(200), completionId: z.string().min(1), customerName: z.string().trim().min(1).max(120), signature: signatureInput, consentAccepted: z.boolean() }),
 };
 for (const route of ["work", "completions"]) app.get(`/v1/jobs/:jobId/${route}`, async (request, reply) => {
