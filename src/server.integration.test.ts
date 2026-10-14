@@ -25,6 +25,8 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     if (unavailable) { res.statusCode = 503; res.end(JSON.stringify({ error: "private upstream detail" })); return; }
     if(req.url === "/api/action") {res.end(JSON.stringify({status:"success",value:{tokens:{token:"test-only"}}}));return;}
     if (req.url === "/workforce/accounts/authenticate" || req.url === "/workforce/accounts/provision-from-blake") res.end(JSON.stringify({ account: !disabled && body.email === "test@example.test" ? { id: "account-1", email: "test@example.test", passwordHash, name: "Test", role: "plumber", organisation: { id: "company-1", name: "Test", purchasePermission: "request" } } : null }));
+    else if (req.url === "/workforce/push/register") res.end(JSON.stringify({ registered: true }));
+    else if (req.url === "/workforce/push/unregister") res.end(JSON.stringify({ unregistered: true }));
     else if (req.url === "/workforce/mobile/jobs") res.end(JSON.stringify([{ id: "job-1", date: body.date, reference: "JB-TEST", costCentres: ["Bathroom"], tasks: [{ id: "task-1", name: "Bathroom" }] }]));
     else if (req.url === "/workforce/mobile/purchase") res.end(JSON.stringify({ reference: "POR-TEST", status: "requested" }));
     else if (req.url?.startsWith("/workforce/mobile/work/") || req.url?.startsWith("/workforce/mobile/completions/")) res.end(JSON.stringify({id:"saved-record",active:false,status:"signed"}));
@@ -100,6 +102,13 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     const expiredAccess = await new SignJWT({ tokenType: "access", email: "expired-access@example.test", organisationId: "company-1" }).setProtectedHeader({ alg: "HS256" }).setSubject("account-1").setExpirationTime(Math.floor(Date.now() / 1000) - 1).sign(new TextEncoder().encode(secret));
     assert.equal((await fetch(`${base}/v1/jobs?date=2026-09-08`, { headers: { authorization: `Bearer ${expiredAccess}` } })).status, 401);
     const headers = { "content-type": "application/json", authorization: `Bearer ${session.accessToken}` };
+    for (const token of ["ExpoPushToken[audit-token]", "ExponentPushToken[audit-token]"]) {
+      assert.equal((await fetch(`${base}/v1/push-tokens`, { method: "POST", headers, body: JSON.stringify({ token, platform: "ios", companyId: "forged", accountId: "forged" }) })).status, 200);
+      assert.deepEqual(calls.filter(call => call.path === "/workforce/push/register").at(-1)!.body, { accountId: "account-1", companyId: "company-1", token, platform: "ios" });
+      assert.equal((await fetch(`${base}/v1/push-tokens`, { method: "DELETE", headers, body: JSON.stringify({ token, companyId: "forged", accountId: "forged" }) })).status, 200);
+      assert.deepEqual(calls.filter(call => call.path === "/workforce/push/unregister").at(-1)!.body, { accountId: "account-1", companyId: "company-1", token });
+    }
+    assert.equal((await fetch(`${base}/v1/push-tokens`, { method: "POST", headers, body: JSON.stringify({ token: "invalid", platform: "ios" }) })).status, 400);
     assert.equal((await fetch(`${base}/v1/unscheduled/jobs`)).status, 401);
     assert.equal((await fetch(`${base}/v1/unscheduled/jobs?cursor=page`, { headers })).status, 200);
     assert.deepEqual(calls.find(call => call.path === "/workforce/mobile/unscheduled/jobs")!.body, { accountId: "account-1", companyId: "company-1", cursor: "page" });

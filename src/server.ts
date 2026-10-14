@@ -14,7 +14,7 @@ type WorkforceJob = { id: string; plumberId: string; date: string; reference: st
 const signInInput = z.object({ email: z.string().email(), password: z.string().min(1) });
 const dayInput = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
 const pushTokenInput = z.object({
-  token: z.string().regex(/^(Exponent|Expo)PushToken\\[[^\\]]+\\]$/),
+  token: z.string().max(300).regex(/^(Exponent|Expo)PushToken\[[^\[\]\s]+\]$/),
   platform: z.enum(["ios", "android"]),
 });
 const jobDateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -171,10 +171,10 @@ app.post("/v1/push-tokens", async (request, reply) => {
 });
 app.delete("/v1/push-tokens", async (request, reply) => {
   try {
-    await currentUser(request);
+    const user = await currentUser(request);
     const parsed = pushTokenInput.pick({ token: true }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid notification token." });
-    await blakeStore("/workforce/push/unregister", parsed.data);
+    await blakeStore("/workforce/push/unregister", { ...actor(user), ...parsed.data });
     return { unregistered: true };
   } catch (error) {
     return failure(error, request, reply);
