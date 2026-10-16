@@ -5,6 +5,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { minutesFromClock } from "./clock.js";
+import { downloadJobFile, JobFileError } from "./job-files.js";
 
 type Role = "plumber" | "manager" | "office";
 type PurchasePermission = "create" | "request";
@@ -14,7 +15,7 @@ type WorkforceJob = { id: string; plumberId: string; date: string; reference: st
 const signInInput = z.object({ email: z.string().email(), password: z.string().min(1) });
 const dayInput = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
 const pushTokenInput = z.object({
-  token: z.string().regex(/^(Exponent|Expo)PushToken\\[[^\\]]+\\]$/),
+  token: z.string().max(300).regex(/^(Exponent|Expo)PushToken\[[^\[\]\s]+\]$/),
   platform: z.enum(["ios", "android"]),
 });
 const jobDateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -171,10 +172,10 @@ app.post("/v1/push-tokens", async (request, reply) => {
 });
 app.delete("/v1/push-tokens", async (request, reply) => {
   try {
-    await currentUser(request);
+    const user = await currentUser(request);
     const parsed = pushTokenInput.pick({ token: true }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid notification token." });
-    await blakeStore("/workforce/push/unregister", parsed.data);
+    await blakeStore("/workforce/push/unregister", { ...actor(user), ...parsed.data });
     return { unregistered: true };
   } catch (error) {
     return failure(error, request, reply);
@@ -310,6 +311,22 @@ for (const [route, validator] of Object.entries(workRoutes)) app.post(`/v1/jobs/
 app.post("/v1/jobs/:jobId/stop-go", async (request, reply) => {
   try { await currentUser(request); return reply.code(409).send({ error: "Update Blake Workforce to complete the forms assigned by your office." }); }
   catch (error) { return failure(error, request, reply); }
+});
+app.get("/v1/jobs/:jobId/files/:documentId", async (request, reply) => {
+  reply.header("cache-control", "no-store").header("x-content-type-options", "nosniff");
+  try {
+    const user = await currentUser(request);
+    const query = dayInput.safeParse(request.query);
+    const params = z.object({ jobId: z.string().min(1).max(100), documentId: z.string().min(1).max(100) }).safeParse(request.params);
+    if (!query.success || !params.success) return reply.code(400).send({ error: "A valid job, file and visit date are required." });
+    const file = await downloadJobFile(blakeWorkforceStoreUrl, blakeSyncSecret, {
+      ...actor(user), jobId: params.data.jobId, jobDate: query.data.date, documentId: params.data.documentId,
+    });
+    return reply.header("content-type", file.mimeType).header("content-disposition", file.disposition).send(file.bytes);
+  } catch (error) {
+    if (error instanceof JobFileError) return reply.code(error.status).send({ error: error.message });
+    return failure(error, request, reply);
+  }
 });
 for (const route of ["files", "forms"]) app.get(`/v1/jobs/:jobId/${route}`, async (request, reply) => {
   try {
