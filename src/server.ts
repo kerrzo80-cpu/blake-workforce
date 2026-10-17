@@ -47,8 +47,10 @@ async function tokenUser(token: string | undefined, tokenType: "access" | "refre
   // Existing access tokens predate the explicit token type.
   if (verified.payload.tokenType !== tokenType && !(tokenType === "access" && verified.payload.tokenType === undefined)) throw new Error("UNAUTHENTICATED");
   const email = typeof verified.payload.email === "string" ? verified.payload.email : undefined;
-  if (!email) throw new Error("UNAUTHENTICATED");
-  const stored = await blakeStore<{ account: WorkforceUser | null }>("/workforce/accounts/authenticate", { email });
+  const accountId = verified.payload.sub;
+  const companyId = verified.payload.organisationId;
+  if (!email || !accountId || typeof companyId !== "string" || !companyId) throw new Error("UNAUTHENTICATED");
+  const stored = await blakeStore<{ account: WorkforceUser | null }>("/workforce/accounts/authenticate", { email, accountId, companyId });
   if (!stored.account || stored.account.id !== verified.payload.sub || stored.account.organisation.id !== verified.payload.organisationId) throw new Error("UNAUTHENTICATED");
   return { user: stored.account, expiresAt: verified.payload.exp };
 }
