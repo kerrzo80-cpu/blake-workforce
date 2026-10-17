@@ -36,7 +36,7 @@ test("existing company-scoped sessions survive a second company login without ch
   const upstream = `http://127.0.0.1:${(backend.address() as { port: number }).port}`;
   const reserve = createServer(); reserve.listen(0, "127.0.0.1"); await once(reserve, "listening");
   const port = (reserve.address() as { port: number }).port; await new Promise<void>(resolve => reserve.close(() => resolve()));
-  const child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), WORKFORCE_HOST: "127.0.0.1", WORKFORCE_DEMO_MODE: "false", WORKFORCE_JWT_SECRET: secret, BLAKE_SYNC_SECRET: syncSecret, BLAKE_AUTH_URL: upstream, BLAKE_WORKFORCE_STORE_URL: upstream }, stdio: "ignore" });
+  const child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), WORKFORCE_HOST: "127.0.0.1", WORKFORCE_DEMO_MODE: "false", WORKFORCE_JWT_SECRET: secret, BLAKE_SYNC_SECRET: syncSecret, BLAKE_AUTH_URL: upstream, BLAKE_TIME_CONFIRMATION_URL: upstream + "/workforce/time-confirmations", BLAKE_WORKFORCE_STORE_URL: upstream }, stdio: "ignore" });
   const closed = once(child, "close"), base = `http://127.0.0.1:${port}`;
   try {
     let ready = false;

@@ -42,7 +42,7 @@ test("private job files are streamed through current scoped gateway access", asy
   const port = (reserve.address() as { port: number }).port; await new Promise<void>(resolve => reserve.close(() => resolve()));
   const child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], {
     cwd: process.env.BLAKE_FILE_TEST_SOURCE || process.cwd(),
-    env: { ...process.env, PORT: String(port), WORKFORCE_HOST: "127.0.0.1", WORKFORCE_DEMO_MODE: "false", WORKFORCE_JWT_SECRET: secret, BLAKE_SYNC_SECRET: syncSecret, BLAKE_WORKFORCE_STORE_URL: `http://127.0.0.1:${backendPort}` },
+    env: { ...process.env, PORT: String(port), WORKFORCE_HOST: "127.0.0.1", WORKFORCE_DEMO_MODE: "false", WORKFORCE_JWT_SECRET: secret, BLAKE_SYNC_SECRET: syncSecret, BLAKE_AUTH_URL: `http://127.0.0.1:${backendPort}`, BLAKE_TIME_CONFIRMATION_URL: `http://127.0.0.1:${backendPort}/workforce/time-confirmations`, BLAKE_WORKFORCE_STORE_URL: `http://127.0.0.1:${backendPort}` },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let logs = ""; child.stdout.on("data", value => { logs += String(value); }); child.stderr.on("data", value => { logs += String(value); });

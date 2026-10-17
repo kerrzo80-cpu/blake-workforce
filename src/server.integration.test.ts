@@ -44,7 +44,7 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
   const backendPort = (backend.address() as { port: number }).port;
   const reserve = createServer(); reserve.listen(0, "127.0.0.1"); await once(reserve, "listening");
   const port = (reserve.address() as { port: number }).port; await new Promise<void>(resolve => reserve.close(() => resolve()));
-  const child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), WORKFORCE_HOST: "127.0.0.1", WORKFORCE_DEMO_MODE: "false", WORKFORCE_ALLOWED_ORIGIN: "https://old.example.test, https://new.example.test", WORKFORCE_JWT_SECRET: secret, BLAKE_SYNC_SECRET: syncSecret, BLAKE_WORKFORCE_STORE_URL: `http://127.0.0.1:${backendPort}` }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), WORKFORCE_HOST: "127.0.0.1", WORKFORCE_DEMO_MODE: "false", WORKFORCE_ALLOWED_ORIGIN: "https://old.example.test, https://new.example.test", WORKFORCE_JWT_SECRET: secret, BLAKE_SYNC_SECRET: syncSecret, BLAKE_AUTH_URL: `http://127.0.0.1:${backendPort}`, BLAKE_TIME_CONFIRMATION_URL: `http://127.0.0.1:${backendPort}/workforce/time-confirmations`, BLAKE_WORKFORCE_STORE_URL: `http://127.0.0.1:${backendPort}` }, stdio: ["ignore", "pipe", "pipe"] });
   let gatewayLogs = ""; child.stdout?.on("data", data => { gatewayLogs += String(data); });
   const closed = once(child, "close");
   let startupError = ""; child.stderr?.on("data", data => { startupError += String(data); });
