@@ -151,18 +151,28 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     for (const [route, input] of [
       ["work/start", {jobDate:"2026-09-09",taskId:"task-1",key:"start"}],
       ["work/stop", {sessionId:"visit-1",expectedVersion:1,key:"stop"}],
-      ["work/amend", {jobDate:"2026-09-09",taskId:"task-1",sessionId:"visit-1",expectedVersion:2,key:"amend",start:"08:00",finish:"10:00",reason:"Forgot to stop"}],
+      ["work/pause", {sessionId:"visit-1",expectedVersion:1,key:"pause"}],
+      ["work/resume", {sessionId:"visit-1",expectedVersion:2,key:"resume"}],
+      ["work/amend", {jobDate:"2026-09-09",taskId:"task-1",sessionId:"visit-1",expectedVersion:2,key:"amend",start:"08:00",finish:"10:00",breakMinutes:15,reason:"Forgot to stop"}],
       ["completions/complete", {jobDate:"2026-09-09",taskIds:["task-1"],wholeJob:false,key:"complete",workSummary:"Done",unavailableReason:"Customer away"}],
     ] as const) {
       const write = await fetch(`${base}/v1/jobs/job-1/${route}`, {method:"POST",headers,body:JSON.stringify({...input,companyId:"forged",accountId:"forged",jobId:"forged"})});
       assert.equal(write.status,200);
       const sent=calls.filter(c=>c.path===`/workforce/mobile/${route}`).at(-1)!.body;
       assert.equal(sent.companyId,"company-1");assert.equal(sent.accountId,"account-1");
-      assert.equal(sent.jobId,route==="work/stop"?undefined:"job-1");
+      assert.equal(sent.jobId,["work/stop","work/pause","work/resume"].includes(route)?undefined:"job-1");
       assert.equal((await fetch(`${base}/v1/jobs/job-1/${route}`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(input)})).status,401);
     }
     const badAmend=await fetch(`${base}/v1/jobs/job-1/work/amend`,{method:"POST",headers,body:JSON.stringify({jobDate:"2026-09-09",taskId:"task-1",start:"08:00",finish:"09:00",notes:"",key:"empty"})});assert.equal(badAmend.status,200);
     const tooLong = await fetch(`${base}/v1/jobs/job-1/work/amend`,{method:"POST",headers,body:JSON.stringify({jobDate:"2026-09-09",taskId:"task-1",start:"08:00",finish:"09:00",notes:"x".repeat(501),key:"long"})}); assert.equal(tooLong.status,400);
+    const breakPayload={jobDate:"2026-09-09",taskId:"task-1",start:"08:00",finish:"09:00",key:"break",notes:"Synthetic break"};
+    for(const breakMinutes of [-1,0.5,1440]) {
+      const before=calls.filter(c=>c.path==="/workforce/mobile/work/amend").length;
+      assert.equal((await fetch(`${base}/v1/jobs/job-1/work/amend`,{method:"POST",headers,body:JSON.stringify({...breakPayload,breakMinutes})})).status,400);
+      assert.equal(calls.filter(c=>c.path==="/workforce/mobile/work/amend").length,before);
+    }
+    assert.equal((await fetch(`${base}/v1/jobs/job-1/work/amend`,{method:"POST",headers,body:JSON.stringify({...breakPayload,breakMinutes:15})})).status,200);
+    assert.equal(calls.filter(c=>c.path==="/workforce/mobile/work/amend").at(-1)!.body.breakMinutes,15);
     const oldForm = await fetch(`${base}/v1/jobs/job-1/stop-go`, { method: "POST", headers, body: JSON.stringify({ jobDate: "2026-09-08", gate: "Fake gate", answer: "pass" }) });
     assert.equal(oldForm.status, 409);
     const forged = await new SignJWT({ email: "test@example.test", organisationId: "company-1" }).setProtectedHeader({ alg: "HS256" }).setSubject("different-account").setExpirationTime("5m").sign(new TextEncoder().encode(secret));
