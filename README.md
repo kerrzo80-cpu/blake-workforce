@@ -52,3 +52,5 @@ Run the maintained client's web tests, gateway tests and type check, then verify
 an exact-commit deployment and its environment/health identity before connecting
 Office's `VITE_WORKFORCE_APP_URL` to that web address. A loaded sign-in page does
 not establish successful saved-record, physical-device or main-app acceptance.
+
+All environments require an explicitly configured private `WORKFORCE_JWT_SECRET` of at least 32 bytes. The old publicly known fallback is rejected before the server listens. This validation preserves the exact bytes of a valid existing managed key; it does not rotate keys or invalidate existing sessions. Never put a signing key in the public web config or a committed example.
