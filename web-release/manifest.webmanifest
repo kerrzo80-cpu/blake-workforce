@@ -1,0 +1,22 @@
+{
+  "name": "Blake Workforce",
+  "short_name": "Workforce",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#eef6fa",
+  "theme_color": "#eef6fa",
+  "icons": [
+    {
+      "src": "/blake-workforce-icon-v2.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/blake-workforce-icon-v2.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

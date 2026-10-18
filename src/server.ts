@@ -5,6 +5,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { minutesFromClock } from "./clock.js";
+import { registerWorkforceWeb } from "./workforce-web.js";
 import { downloadJobFile, JobFileError } from "./job-files.js";
 
 type Role = "plumber" | "manager" | "office";
@@ -109,7 +110,14 @@ const allowedWebOrigins = (process.env.WORKFORCE_ALLOWED_ORIGIN ?? "")
   .split(",").map(origin => origin.trim()).filter(Boolean);
 await app.register(cors, { origin: allowedWebOrigins.includes("*") ? "*" : allowedWebOrigins.length ? allowedWebOrigins : false });
 
-app.get("/", async () => ({ ok: true, service: "blake-workforce-api", mode: demoMode ? "demo" : "production" }));
+const webEnabled = await registerWorkforceWeb(app, {
+  enabled: process.env.WORKFORCE_WEB_ENABLED,
+  officeOrigin: process.env.WORKFORCE_WEB_OFFICE_ORIGIN,
+  environment: process.env.WORKFORCE_WEB_ENVIRONMENT,
+  gatewayCommit: process.env.RENDER_GIT_COMMIT,
+  backendUrl: blakeWorkforceStoreUrl,
+});
+if (!webEnabled) app.get("/", async () => ({ ok: true, service: "blake-workforce-api", mode: demoMode ? "demo" : "production" }));
 app.get("/health", async () => ({
   ok: true,
   service: "blake-workforce-api",

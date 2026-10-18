@@ -1,0 +1,72 @@
+{
+  "format": 1,
+  "sourceRepository": "kerrzo80-cpu/blake-workforce-app",
+  "sourceCommit": "64ada9902d9e25fea0d21547ecd8fd4022989bf0",
+  "files": [
+    {
+      "name": "app-icon.png",
+      "bytes": 296166,
+      "sha256": "88a6c9540e0c7035374a3a48ff944ee47148a997558b9117dd37b94098966a6e"
+    },
+    {
+      "name": "app.js",
+      "bytes": 28928,
+      "sha256": "cc2bd632c05e0efae8a9250eac352f77a1b532d23670c7eb769da1b0de94014e"
+    },
+    {
+      "name": "blake-logo.png",
+      "bytes": 109814,
+      "sha256": "b5858799f995cb54ee384c85f8a41826f793ab1cb70782b4b8856491ccd500df"
+    },
+    {
+      "name": "blake-workforce-icon-v2.png",
+      "bytes": 160088,
+      "sha256": "3b63654066b7e83f58440aa030b3dee5690d12eb8123907be39572cde0ed2079"
+    },
+    {
+      "name": "index.html",
+      "bytes": 917,
+      "sha256": "e6cf21b506c1c68fdf67d36b8a474e91396e242b6672cfe6bc5ab74b0eee4ab4"
+    },
+    {
+      "name": "manifest.webmanifest",
+      "bytes": 459,
+      "sha256": "fb697d5b4695aa227561ce18383976e8e0c1e0a20f63f7f7a056a4a0c33782a4"
+    },
+    {
+      "name": "price-work-history.mjs",
+      "bytes": 1009,
+      "sha256": "23fc1ab4a57d8af9adc17bedcb106c51bd65f80713f4e190654053237e3ca101"
+    },
+    {
+      "name": "session.mjs",
+      "bytes": 2705,
+      "sha256": "4437ac42280a6ec6905c9e33c6ccce9411bc8e09a43bd1dc401d042c5cd36b8b"
+    },
+    {
+      "name": "styles.css",
+      "bytes": 7586,
+      "sha256": "c8bd791ea6b198ebab05913f763f184c4f2f01559bdd92401a1885bf4b6f5a1c"
+    },
+    {
+      "name": "sw.js",
+      "bytes": 420,
+      "sha256": "f7d0a670484bd706371e06a0e9993380c08b0576891c49270e3007999b2de6b7"
+    },
+    {
+      "name": "unscheduled.js",
+      "bytes": 9646,
+      "sha256": "3324f5be1c294a27ee0e5a7a969bbba4d36a2d0319babac22ec09efd62c74a2a"
+    },
+    {
+      "name": "uploads.js",
+      "bytes": 6372,
+      "sha256": "f8211b3881564236b7b1e27de9af8a1f1c7d59449043e463fe23b72b2c46e9de"
+    },
+    {
+      "name": "work.js",
+      "bytes": 22417,
+      "sha256": "c8da00392e1a53183f57a6d9ff7fee6732f1f1d52cba3b4a8ffc02fabad054c5"
+    }
+  ]
+}
