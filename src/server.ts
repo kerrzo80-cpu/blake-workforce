@@ -5,6 +5,8 @@ import { SignJWT, jwtVerify } from "jose";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { minutesFromClock } from "./clock.js";
+import { registerWorkforceWeb } from "./workforce-web.js";
+import { workforceSigningKey } from "./signing-configuration.js";
 import { downloadJobFile, JobFileError } from "./job-files.js";
 
 type Role = "plumber" | "manager" | "office";
@@ -23,7 +25,7 @@ const purchaseOrderInput = z.object({ referenceOnly: z.boolean().optional(), job
 const timeInput = z.object({ jobDate: jobDateInput, taskId: z.string().optional(), start: z.string().min(1), finish: z.string().min(1), breakMinutes: z.number().int().min(0).max(1439).optional(), note: z.string().max(500).optional() });
 const stopGoInput = z.object({ jobDate: jobDateInput, gate: z.string().min(1), answer: z.enum(["pass", "stop"]), note: z.string().max(500).optional() });
 const blakeScheduleInput = z.object({ companyId: z.string().min(1).max(100), jobs: z.array(z.object({ plumberEmail: z.string().email(), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), reference: z.string().min(1), customer: z.string().min(1), site: z.string().min(1), scheduledTime: z.string().min(1), costCentres: z.array(z.string().min(1)).min(1) })).max(500) });
-const secret = new TextEncoder().encode(process.env.WORKFORCE_JWT_SECRET ?? "development-only-secret-change-before-deploy");
+const secret = workforceSigningKey(process.env.WORKFORCE_JWT_SECRET);
 const demoMode = process.env.WORKFORCE_DEMO_MODE === "true";
 const blakeSyncSecret = process.env.BLAKE_SYNC_SECRET;
 const blakeTimeConfirmationUrl = process.env.BLAKE_TIME_CONFIRMATION_URL ?? "https://insightful-lark-403.eu-west-1.convex.site/workforce/time-confirmations";
@@ -109,7 +111,14 @@ const allowedWebOrigins = (process.env.WORKFORCE_ALLOWED_ORIGIN ?? "")
   .split(",").map(origin => origin.trim()).filter(Boolean);
 await app.register(cors, { origin: allowedWebOrigins.includes("*") ? "*" : allowedWebOrigins.length ? allowedWebOrigins : false });
 
-app.get("/", async () => ({ ok: true, service: "blake-workforce-api", mode: demoMode ? "demo" : "production" }));
+const webEnabled = await registerWorkforceWeb(app, {
+  enabled: process.env.WORKFORCE_WEB_ENABLED,
+  officeOrigin: process.env.WORKFORCE_WEB_OFFICE_ORIGIN,
+  environment: process.env.WORKFORCE_WEB_ENVIRONMENT,
+  gatewayCommit: process.env.RENDER_GIT_COMMIT,
+  backendUrl: blakeWorkforceStoreUrl,
+});
+if (!webEnabled) app.get("/", async () => ({ ok: true, service: "blake-workforce-api", mode: demoMode ? "demo" : "production" }));
 app.get("/health", async () => ({
   ok: true,
   service: "blake-workforce-api",
