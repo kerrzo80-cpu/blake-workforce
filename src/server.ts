@@ -13,6 +13,7 @@ type WorkforceUser = { id: string; email: string; passwordHash: string; name: st
 type WorkforceJob = { id: string; plumberId: string; date: string; reference: string; customer: string; site: string; scheduledTime: string; costCentres: string[] };
 
 const signInInput = z.object({ email: z.string().email(), password: z.string().min(1) });
+const activityDayInput = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), activities: z.literal("1").optional() });
 const dayInput = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
 const pushTokenInput = z.object({
   token: z.string().max(300).regex(/^(Exponent|Expo)PushToken\[[^\[\]\s]+\]$/),
@@ -88,10 +89,11 @@ async function verifyBlakeCredentials(email: string, password: string) {
   return result?.status === "success" && Boolean(result.value?.tokens?.token);
 }
 
-async function assignedJob(user: WorkforceUser, jobId: string, jobDate: string) {
+async function assignedJob(user: WorkforceUser, jobId: string, jobDate: string, includeActivities = false) {
   const jobs = await blakeStore<WorkforceJob[]>("/workforce/mobile/jobs", {
     ...actor(user),
     date: jobDate,
+    ...(includeActivities ? { includeActivities: true } : {}),
   });
   return { job: jobs.find(job => job.id === jobId) ?? null };
 }
@@ -245,10 +247,10 @@ app.post("/v1/unscheduled/jobs/:jobId/work/amend", async (request, reply) => {
 });
 app.get("/v1/jobs", async (request, reply) => {
   try {
-    const parsed = dayInput.safeParse(request.query);
+    const parsed = activityDayInput.safeParse(request.query);
     if (!parsed.success) return reply.code(400).send({ error: "A valid date is required." });
     const user = await currentUser(request);
-    return await blakeStore<WorkforceJob[]>("/workforce/mobile/jobs", { ...actor(user), date: parsed.data.date });
+    return await blakeStore<WorkforceJob[]>("/workforce/mobile/jobs", { ...actor(user), date: parsed.data.date, ...(parsed.data.activities === "1" ? { includeActivities: true } : {}) });
   } catch (error) {
     return failure(error, request, reply);
   }
@@ -256,9 +258,9 @@ app.get("/v1/jobs", async (request, reply) => {
 app.get("/v1/jobs/:jobId", async (request, reply) => {
   try {
     const user = await currentUser(request);
-    const query = dayInput.safeParse(request.query);
+    const query = activityDayInput.safeParse(request.query);
     if (!query.success) return reply.code(400).send({ error: "A valid job date is required." });
-    const result = await assignedJob(user, (request.params as { jobId: string }).jobId, query.data.date);
+    const result = await assignedJob(user, (request.params as { jobId: string }).jobId, query.data.date, query.data.activities === "1");
     return result.job ?? reply.code(404).send({ error: "Job not found." });
   } catch (error) { return failure(error, request, reply); }
 });
