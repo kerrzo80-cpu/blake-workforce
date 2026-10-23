@@ -5,6 +5,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { minutesFromClock } from "./clock.js";
+import { downloadJobFile, JobFileError } from "./job-files.js";
 
 type Role = "plumber" | "manager" | "office";
 type PurchasePermission = "create" | "request";
@@ -12,14 +13,15 @@ type WorkforceUser = { id: string; email: string; passwordHash: string; name: st
 type WorkforceJob = { id: string; plumberId: string; date: string; reference: string; customer: string; site: string; scheduledTime: string; costCentres: string[] };
 
 const signInInput = z.object({ email: z.string().email(), password: z.string().min(1) });
+const activityDayInput = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), activities: z.literal("1").optional() });
 const dayInput = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
 const pushTokenInput = z.object({
-  token: z.string().regex(/^(Exponent|Expo)PushToken\\[[^\\]]+\\]$/),
+  token: z.string().max(300).regex(/^(Exponent|Expo)PushToken\[[^\[\]\s]+\]$/),
   platform: z.enum(["ios", "android"]),
 });
 const jobDateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const purchaseOrderInput = z.object({ referenceOnly: z.boolean().optional(), jobDate: jobDateInput, key: z.string().min(1).max(200).optional(), taskId: z.string().optional(), costCentre: z.string().min(1), supplier: z.string().min(1), description: z.string().min(1).max(2000).default("Materials collection — details to follow"), quantity: z.number().positive().max(10000).default(1), cost: z.number().nonnegative().max(1000000).default(0), vatRate: z.number().optional() });
-const timeInput = z.object({ jobDate: jobDateInput, taskId: z.string().optional(), start: z.string().min(1), finish: z.string().min(1), note: z.string().max(500).optional() });
+const timeInput = z.object({ jobDate: jobDateInput, taskId: z.string().optional(), start: z.string().min(1), finish: z.string().min(1), breakMinutes: z.number().int().min(0).max(1439).optional(), note: z.string().max(500).optional() });
 const stopGoInput = z.object({ jobDate: jobDateInput, gate: z.string().min(1), answer: z.enum(["pass", "stop"]), note: z.string().max(500).optional() });
 const blakeScheduleInput = z.object({ companyId: z.string().min(1).max(100), jobs: z.array(z.object({ plumberEmail: z.string().email(), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), reference: z.string().min(1), customer: z.string().min(1), site: z.string().min(1), scheduledTime: z.string().min(1), costCentres: z.array(z.string().min(1)).min(1) })).max(500) });
 const secret = new TextEncoder().encode(process.env.WORKFORCE_JWT_SECRET ?? "development-only-secret-change-before-deploy");
@@ -46,8 +48,10 @@ async function tokenUser(token: string | undefined, tokenType: "access" | "refre
   // Existing access tokens predate the explicit token type.
   if (verified.payload.tokenType !== tokenType && !(tokenType === "access" && verified.payload.tokenType === undefined)) throw new Error("UNAUTHENTICATED");
   const email = typeof verified.payload.email === "string" ? verified.payload.email : undefined;
-  if (!email) throw new Error("UNAUTHENTICATED");
-  const stored = await blakeStore<{ account: WorkforceUser | null }>("/workforce/accounts/authenticate", { email });
+  const accountId = verified.payload.sub;
+  const companyId = verified.payload.organisationId;
+  if (!email || !accountId || typeof companyId !== "string" || !companyId) throw new Error("UNAUTHENTICATED");
+  const stored = await blakeStore<{ account: WorkforceUser | null }>("/workforce/accounts/authenticate", { email, accountId, companyId });
   if (!stored.account || stored.account.id !== verified.payload.sub || stored.account.organisation.id !== verified.payload.organisationId) throw new Error("UNAUTHENTICATED");
   return { user: stored.account, expiresAt: verified.payload.exp };
 }
@@ -85,10 +89,11 @@ async function verifyBlakeCredentials(email: string, password: string) {
   return result?.status === "success" && Boolean(result.value?.tokens?.token);
 }
 
-async function assignedJob(user: WorkforceUser, jobId: string, jobDate: string) {
+async function assignedJob(user: WorkforceUser, jobId: string, jobDate: string, includeActivities = false) {
   const jobs = await blakeStore<WorkforceJob[]>("/workforce/mobile/jobs", {
     ...actor(user),
     date: jobDate,
+    ...(includeActivities ? { includeActivities: true } : {}),
   });
   return { job: jobs.find(job => job.id === jobId) ?? null };
 }
@@ -171,10 +176,10 @@ app.post("/v1/push-tokens", async (request, reply) => {
 });
 app.delete("/v1/push-tokens", async (request, reply) => {
   try {
-    await currentUser(request);
+    const user = await currentUser(request);
     const parsed = pushTokenInput.pick({ token: true }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid notification token." });
-    await blakeStore("/workforce/push/unregister", parsed.data);
+    await blakeStore("/workforce/push/unregister", { ...actor(user), ...parsed.data });
     return { unregistered: true };
   } catch (error) {
     return failure(error, request, reply);
@@ -234,7 +239,7 @@ for (const route of ["tasks", "work"]) app.get(`/v1/unscheduled/jobs/:jobId/${ro
 app.post("/v1/unscheduled/jobs/:jobId/work/amend", async (request, reply) => {
   try {
     const clockInput = z.string().length(5).refine(value => minutesFromClock(value) !== null);
-    const input = z.object({ jobDate: jobDateInput, taskId: z.string().min(1).max(100), key: z.string().min(1).max(200), start: clockInput, finish: clockInput, finishDate: jobDateInput.optional(), notes: z.string().trim().min(1).max(450), sessionId: z.string().min(1).max(100).optional(), expectedVersion: z.number().int().positive().optional() }).safeParse(request.body);
+    const input = z.object({ jobDate: jobDateInput, taskId: z.string().min(1).max(100), key: z.string().min(1).max(200), start: clockInput, finish: clockInput, finishDate: jobDateInput.optional(), breakMinutes: z.number().int().min(0).max(1439).optional(), notes: z.string().trim().min(1).max(450), sessionId: z.string().min(1).max(100).optional(), expectedVersion: z.number().int().positive().optional() }).safeParse(request.body);
     if (!input.success) return reply.code(400).send({ error: "Enter a cost centre, start/end times and reason." });
     const user = await currentUser(request);
     return await blakeStore("/workforce/mobile/unscheduled/submit", { ...input.data, ...actor(user), jobId: (request.params as { jobId: string }).jobId });
@@ -242,10 +247,10 @@ app.post("/v1/unscheduled/jobs/:jobId/work/amend", async (request, reply) => {
 });
 app.get("/v1/jobs", async (request, reply) => {
   try {
-    const parsed = dayInput.safeParse(request.query);
+    const parsed = activityDayInput.safeParse(request.query);
     if (!parsed.success) return reply.code(400).send({ error: "A valid date is required." });
     const user = await currentUser(request);
-    return await blakeStore<WorkforceJob[]>("/workforce/mobile/jobs", { ...actor(user), date: parsed.data.date });
+    return await blakeStore<WorkforceJob[]>("/workforce/mobile/jobs", { ...actor(user), date: parsed.data.date, ...(parsed.data.activities === "1" ? { includeActivities: true } : {}) });
   } catch (error) {
     return failure(error, request, reply);
   }
@@ -253,9 +258,9 @@ app.get("/v1/jobs", async (request, reply) => {
 app.get("/v1/jobs/:jobId", async (request, reply) => {
   try {
     const user = await currentUser(request);
-    const query = dayInput.safeParse(request.query);
+    const query = activityDayInput.safeParse(request.query);
     if (!query.success) return reply.code(400).send({ error: "A valid job date is required." });
-    const result = await assignedJob(user, (request.params as { jobId: string }).jobId, query.data.date);
+    const result = await assignedJob(user, (request.params as { jobId: string }).jobId, query.data.date, query.data.activities === "1");
     return result.job ?? reply.code(404).send({ error: "Job not found." });
   } catch (error) { return failure(error, request, reply); }
 });
@@ -284,7 +289,9 @@ const signatureInput = z.array(z.array(z.object({ x: z.number().min(0).max(1), y
 const workRoutes = {
   "work/start": z.object({ jobDate: jobDateInput, taskId: z.string().min(1), key: z.string().min(1).max(200) }),
   "work/stop": z.object({ sessionId: z.string().min(1), expectedVersion: z.number().int().positive(), key: z.string().min(1).max(200) }),
-  "work/amend": z.object({ jobDate: jobDateInput, taskId: z.string().min(1), sessionId: z.string().optional(), expectedVersion: z.number().int().positive().optional(), key: z.string().min(1).max(200), start: z.string(), finish: z.string().optional(), finishDate: jobDateInput.optional(), notes: z.string().trim().max(500).optional(), reason: z.string().trim().max(500).optional(), legacyEntryId: z.string().min(1).optional() }),
+  "work/pause": z.object({ sessionId: z.string().min(1), expectedVersion: z.number().int().positive(), key: z.string().min(1).max(200) }),
+  "work/resume": z.object({ sessionId: z.string().min(1), expectedVersion: z.number().int().positive(), key: z.string().min(1).max(200) }),
+  "work/amend": z.object({ jobDate: jobDateInput, taskId: z.string().min(1), sessionId: z.string().optional(), expectedVersion: z.number().int().positive().optional(), key: z.string().min(1).max(200), start: z.string(), finish: z.string().optional(), finishDate: jobDateInput.optional(), breakMinutes: z.number().int().min(0).max(1439).optional(), notes: z.string().trim().max(500).optional(), reason: z.string().trim().max(500).optional(), legacyEntryId: z.string().min(1).optional() }),
   "completions/complete": z.object({ jobDate: jobDateInput, key: z.string().min(1).max(200), taskIds: z.array(z.string()).max(100), wholeJob: z.boolean(), workSummary: z.string().trim().min(1).max(2000), customerName: z.string().max(120).optional(), signature: signatureInput.optional(), consentAccepted: z.boolean().optional(), unavailableReason: z.string().max(500).optional() }),
   "completions/sign": z.object({ jobDate: jobDateInput, key: z.string().min(1).max(200), completionId: z.string().min(1), customerName: z.string().trim().min(1).max(120), signature: signatureInput, consentAccepted: z.boolean() }),
 };
@@ -301,7 +308,7 @@ for (const [route, validator] of Object.entries(workRoutes)) app.post(`/v1/jobs/
     const user = await currentUser(request);
     const input = validator.safeParse(request.body);
     if (!input.success) return reply.code(400).send({ error: "Check the visit or customer sign-off details." });
-    return await blakeStore(`/workforce/mobile/${route}`, { ...input.data, ...actor(user), ...(route === "work/stop" ? {} : { jobId: (request.params as { jobId: string }).jobId }) });
+    return await blakeStore(`/workforce/mobile/${route}`, { ...input.data, ...actor(user), ...(["work/stop", "work/pause", "work/resume"].includes(route) ? {} : { jobId: (request.params as { jobId: string }).jobId }) });
   } catch (error) { return failure(error, request, reply); }
 });
 
@@ -310,6 +317,22 @@ for (const [route, validator] of Object.entries(workRoutes)) app.post(`/v1/jobs/
 app.post("/v1/jobs/:jobId/stop-go", async (request, reply) => {
   try { await currentUser(request); return reply.code(409).send({ error: "Update Blake Workforce to complete the forms assigned by your office." }); }
   catch (error) { return failure(error, request, reply); }
+});
+app.get("/v1/jobs/:jobId/files/:documentId", async (request, reply) => {
+  reply.header("cache-control", "no-store").header("x-content-type-options", "nosniff");
+  try {
+    const user = await currentUser(request);
+    const query = dayInput.safeParse(request.query);
+    const params = z.object({ jobId: z.string().min(1).max(100), documentId: z.string().min(1).max(100) }).safeParse(request.params);
+    if (!query.success || !params.success) return reply.code(400).send({ error: "A valid job, file and visit date are required." });
+    const file = await downloadJobFile(blakeWorkforceStoreUrl, blakeSyncSecret, {
+      ...actor(user), jobId: params.data.jobId, jobDate: query.data.date, documentId: params.data.documentId,
+    });
+    return reply.header("content-type", file.mimeType).header("content-disposition", file.disposition).send(file.bytes);
+  } catch (error) {
+    if (error instanceof JobFileError) return reply.code(error.status).send({ error: error.message });
+    return failure(error, request, reply);
+  }
 });
 for (const route of ["files", "forms"]) app.get(`/v1/jobs/:jobId/${route}`, async (request, reply) => {
   try {
