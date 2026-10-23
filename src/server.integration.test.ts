@@ -100,6 +100,17 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     const expiredAccess = await new SignJWT({ tokenType: "access", email: "expired-access@example.test", organisationId: "company-1" }).setProtectedHeader({ alg: "HS256" }).setSubject("account-1").setExpirationTime(Math.floor(Date.now() / 1000) - 1).sign(new TextEncoder().encode(secret));
     assert.equal((await fetch(`${base}/v1/jobs?date=2026-09-08`, { headers: { authorization: `Bearer ${expiredAccess}` } })).status, 401);
     const headers = { "content-type": "application/json", authorization: `Bearer ${session.accessToken}` };
+    const legacyJobs = await fetch(`${base}/v1/jobs?date=2026-09-08`, { headers });
+    assert.equal(legacyJobs.status, 200);
+    assert.equal(calls.at(-1)!.body.includeActivities, undefined);
+    const activityJobs = await fetch(`${base}/v1/jobs?date=2026-09-08&activities=1`, { headers });
+    assert.equal(activityJobs.status, 200);
+    assert.deepEqual(calls.at(-1)!.body, { accountId: "account-1", companyId: "company-1", date: "2026-09-08", includeActivities: true });
+    assert.equal((await fetch(`${base}/v1/jobs/job-1?date=2026-09-08&activities=1`, { headers })).status, 200);
+    assert.equal(calls.at(-1)!.body.includeActivities, true);
+    assert.equal((await fetch(`${base}/v1/jobs/job-1?date=2026-09-08`, { headers })).status, 200);
+    assert.equal(calls.at(-1)!.body.includeActivities, undefined);
+
     assert.equal((await fetch(`${base}/v1/unscheduled/jobs`)).status, 401);
     assert.equal((await fetch(`${base}/v1/unscheduled/jobs?cursor=page`, { headers })).status, 200);
     assert.deepEqual(calls.find(call => call.path === "/workforce/mobile/unscheduled/jobs")!.body, { accountId: "account-1", companyId: "company-1", cursor: "page" });
