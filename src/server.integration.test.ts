@@ -28,6 +28,9 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     else if (req.url === "/workforce/push/register") res.end(JSON.stringify({ registered: true }));
     else if (req.url === "/workforce/push/unregister") res.end(JSON.stringify({ unregistered: true }));
     else if (req.url === "/workforce/mobile/jobs") res.end(JSON.stringify([{ id: "job-1", date: body.date, reference: "JB-TEST", costCentres: ["Bathroom"], tasks: [{ id: "task-1", name: "Bathroom" }] }]));
+    else if (req.url === "/workforce/mobile/stock") res.end(JSON.stringify({ locations: [], items: [] }));
+    else if (req.url === "/workforce/mobile/stock/replenish") res.end(JSON.stringify({ reference: "POR-STOCK", status: "requested" }));
+    else if (req.url === "/workforce/mobile/stock/use") res.end(JSON.stringify("stock-movement-1"));
     else if (req.url === "/workforce/mobile/purchase") res.end(JSON.stringify({ reference: "POR-TEST", status: "requested" }));
     else if (req.url?.startsWith("/workforce/mobile/work/") || req.url?.startsWith("/workforce/mobile/completions/")) res.end(JSON.stringify({id:"saved-record",active:false,status:"signed"}));
     else if (req.url === "/workforce/mobile/time") res.end(JSON.stringify({ ok: true, status: "pending-office-review" }));
@@ -140,6 +143,15 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     assert.equal(claimArgs.accountId, "account-1"); assert.equal(claimArgs.companyId, "company-1");
     assert.equal(claimArgs.requestId, "retry-claim"); assert.equal((claimArgs.lines as Array<{ amountPence: number }>)[0].amountPence, 60000);
     assert.equal((await fetch(`${base}/v1/price-work/claims`, { method: "POST", headers, body: JSON.stringify({ ...claim, lines: [{ ...claim.lines[0], amountPence: -1 }] }) })).status, 400);
+    assert.equal((await fetch(`${base}/v1/stock`)).status, 401);
+    assert.equal((await fetch(`${base}/v1/stock`, { headers })).status, 200);
+    const stockPo = { stockLocationId: "van-1", supplierId: "supplier-1", key: "stock-po", companyId: "forged", accountId: "forged", jobId: "closed-job" };
+    assert.equal((await fetch(`${base}/v1/stock/replenish`, { method: "POST", headers, body: JSON.stringify(stockPo) })).status, 200);
+    assert.deepEqual(calls.filter(c => c.path === "/workforce/mobile/stock/replenish").at(-1)!.body, { stockLocationId: "van-1", supplierId: "supplier-1", key: "stock-po", companyId: "company-1", accountId: "account-1" });
+    const stockUse = { jobDate: "2026-09-09", stockItemId: "item-1", taskId: "task-1", quantity: 2, key: "stock-use", companyId: "forged", accountId: "forged" };
+    assert.equal((await fetch(`${base}/v1/jobs/job-1/stock-use`, { method: "POST", headers, body: JSON.stringify(stockUse) })).status, 200);
+    assert.deepEqual(calls.filter(c => c.path === "/workforce/mobile/stock/use").at(-1)!.body, { ...stockUse, jobId: "job-1", companyId: "company-1", accountId: "account-1" });
+    assert.equal((await fetch(`${base}/v1/jobs/job-1/stock-use`, { method: "POST", headers, body: JSON.stringify({ ...stockUse, quantity: -1 }) })).status, 400);
     const purchase = { jobDate: "2026-09-08", key: "retry-1", costCentre: "Bathroom", supplier: "Test supplier", description: "Test item", quantity: 1, cost: 10, companyId: "attack-company", accountId: "attack-account" };
     const post = await fetch(`${base}/v1/jobs/job-1/purchase-orders`, { method: "POST", headers, body: JSON.stringify(purchase) });
     assert.equal(post.status, 200); assert.deepEqual(await post.json(), { reference: "POR-TEST", status: "requested" });
