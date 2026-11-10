@@ -3,13 +3,13 @@ import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
 import { z } from "zod";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { minutesFromClock } from "./clock.js";
 import { downloadJobFile, JobFileError } from "./job-files.js";
 
 type Role = "plumber" | "manager" | "office";
 type PurchasePermission = "create" | "request";
-type WorkforceUser = { id: string; email: string; passwordHash: string; name: string; role: Role; organisation: { id: string; name: string; purchasePermission: PurchasePermission } };
+type WorkforceUser = { loginSession?: string; id: string; email: string; passwordHash: string; name: string; role: Role; organisation: { id: string; name: string; purchasePermission: PurchasePermission } };
 type WorkforceJob = { id: string; plumberId: string; date: string; reference: string; customer: string; site: string; scheduledTime: string; costCentres: string[] };
 
 const signInInput = z.object({ email: z.string().email(), password: z.string().min(1) });
@@ -39,7 +39,7 @@ const jobs: WorkforceJob[] = demoMode ? [{ id: "job-demo-1", plumberId: "workfor
 
 async function makeToken(user: WorkforceUser, tokenType: "access" | "refresh" = "access", expiresAt?: number) {
   const expiry = Math.min(Math.floor(Date.now() / 1000) + (tokenType === "refresh" ? 30 * 86400 : 8 * 3600), expiresAt ?? Infinity);
-  return new SignJWT({ tokenType, role: user.role, organisationId: user.organisation.id, email: user.email }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime(expiry).sign(secret);
+  return new SignJWT({ loginSession: user.loginSession, tokenType, role: user.role, organisationId: user.organisation.id, email: user.email }).setProtectedHeader({ alg: "HS256" }).setSubject(user.id).setIssuedAt().setExpirationTime(expiry).sign(secret);
 }
 
 async function tokenUser(token: string | undefined, tokenType: "access" | "refresh") {
@@ -51,9 +51,9 @@ async function tokenUser(token: string | undefined, tokenType: "access" | "refre
   const accountId = verified.payload.sub;
   const companyId = verified.payload.organisationId;
   if (!email || !accountId || typeof companyId !== "string" || !companyId) throw new Error("UNAUTHENTICATED");
-  const stored = await blakeStore<{ account: WorkforceUser | null }>("/workforce/accounts/authenticate", { email, accountId, companyId });
+  const stored = await blakeStore<{ account: WorkforceUser | null }>("/workforce/accounts/authenticate", { email, accountId, companyId, ...(typeof verified.payload.loginSession === "string" ? { loginSessionHash: createHash("sha256").update(verified.payload.loginSession).digest("hex") } : {}) });
   if (!stored.account || stored.account.id !== verified.payload.sub || stored.account.organisation.id !== verified.payload.organisationId) throw new Error("UNAUTHENTICATED");
-  return { user: stored.account, expiresAt: verified.payload.exp };
+  return { user: { ...stored.account, loginSession: typeof verified.payload.loginSession === "string" ? verified.payload.loginSession : undefined }, expiresAt: verified.payload.exp };
 }
 
 async function currentUser(request: FastifyRequest) {
@@ -141,6 +141,8 @@ app.post("/v1/auth/sign-in", async (request, reply) => {
     if (!user || !user.organisation.id) {
       return reply.code(403).send({ error: "You do not have Workforce access. Ask your Blake administrator to add you to staff." });
     }
+    user.loginSession = randomBytes(32).toString("hex");
+    await blakeStore("/workforce/accounts/start-session", { ...actor(user), loginSessionHash: createHash("sha256").update(user.loginSession).digest("hex") });
     return { ...account(user), accessToken: await makeToken(user), refreshToken: await makeToken(user, "refresh") };
   } catch (error) {
     request.log.error(error, "Workforce Blake sign-in failed");

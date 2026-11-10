@@ -11,6 +11,7 @@ test("existing company-scoped sessions survive a second company login without ch
   const email = "multi-company@example.test";
   let selected = "A", revokedA = false;
   const provisioned = new Set<string>();
+  const loginSessions = new Map<string, string>();
   const authenticationCalls: Array<Record<string, unknown>> = [];
   const account = (company: string) => ({ id: `account-${company}`, email, passwordHash: "unused-blake-auth-only", name: `Worker ${company}`, role: "plumber", organisation: { id: `company-${company}`, name: `Company ${company}`, purchasePermission: "request" } });
   const backend = createServer(async (req, res) => {
@@ -23,12 +24,13 @@ test("existing company-scoped sessions survive a second company login without ch
     if (req.url === "/workforce/accounts/provision-from-blake") {
       provisioned.add(selected); res.end(JSON.stringify({ account: account(selected) })); return;
     }
+    if (req.url === "/workforce/accounts/start-session") { loginSessions.set(String(body.accountId), String(body.loginSessionHash)); res.end(JSON.stringify({ started: true })); return; }
     if (req.url === "/workforce/accounts/authenticate") {
       authenticationCalls.push(body);
       const company = body.accountId || body.companyId
         ? [...provisioned].find(c => body.accountId === `account-${c}` && body.companyId === `company-${c}`)
         : provisioned.size === 1 ? [...provisioned][0] : undefined;
-      res.end(JSON.stringify({ account: company && body.email === email && !(company === "A" && revokedA) ? account(company) : null })); return;
+      res.end(JSON.stringify({ account: company && body.email === email && loginSessions.get(String(body.accountId)) === body.loginSessionHash && !(company === "A" && revokedA) ? account(company) : null })); return;
     }
     res.statusCode = 404; res.end(JSON.stringify({ error: "Unknown test path" }));
   });
@@ -62,8 +64,9 @@ test("existing company-scoped sessions survive a second company login without ch
     assert.equal((await first.json() as { organisation: { name: string } }).organisation.name, "Company A");
     const second = await me(b.accessToken); assert.equal(second.status, 200);
     assert.equal((await second.json() as { organisation: { name: string } }).organisation.name, "Company B");
-    assert.deepEqual(authenticationCalls.at(-2), { email, accountId: "account-A", companyId: "company-A" });
-    assert.deepEqual(authenticationCalls.at(-1), { email, accountId: "account-B", companyId: "company-B" });
+    assert.deepEqual({ ...authenticationCalls.at(-2), loginSessionHash: undefined }, { email, accountId: "account-A", companyId: "company-A", loginSessionHash: undefined });
+    assert.match(String(authenticationCalls.at(-2)?.loginSessionHash), /^[a-f0-9]{64}$/);
+    assert.deepEqual({ ...authenticationCalls.at(-1), loginSessionHash: undefined }, { email, accountId: "account-B", companyId: "company-B", loginSessionHash: undefined });
     const renewed = await refresh(a.refreshToken); assert.equal(renewed.status, 200);
     const renewedToken = (await renewed.json() as { accessToken: string }).accessToken;
     assert.equal((await (await me(renewedToken)).json() as { organisation: { name: string } }).organisation.name, "Company A");
@@ -80,6 +83,15 @@ test("existing company-scoped sessions survive a second company login without ch
     assert.equal((await me(b.accessToken)).status, 200, "Revoking A must not revoke B");
     revokedA = false;
     assert.equal((await me(a.accessToken)).status, 200);
+    selected = "A";
+    const replacement = await signIn();
+    assert.equal((await me(a.accessToken)).status, 401, "A new login replaces the old phone session");
+    assert.equal((await refresh(a.refreshToken)).status, 401, "An old refresh token cannot recover access");
+    assert.equal((await me(replacement.accessToken)).status, 200);
+    const replacementRefresh = await refresh(replacement.refreshToken);
+    assert.equal(replacementRefresh.status, 200);
+    assert.equal((await me((await replacementRefresh.json() as { accessToken: string }).accessToken)).status, 200, "Refresh retains the same session identity");
+    assert.equal((await me(b.accessToken)).status, 200, "Replacing A does not evict B");
   } finally {
     if (child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill("SIGTERM"); await exited; }
     await closed;
