@@ -24,6 +24,7 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     res.setHeader("content-type", "application/json");
     if (unavailable) { res.statusCode = 503; res.end(JSON.stringify({ error: "private upstream detail" })); return; }
     if(req.url === "/api/action") {res.end(JSON.stringify({status:"success",value:{tokens:{token:"test-only"}}}));return;}
+    if (req.url === "/workforce/accounts/start-session") { res.end(JSON.stringify({ started: true })); return; }
     if (req.url === "/workforce/accounts/authenticate" || req.url === "/workforce/accounts/provision-from-blake") res.end(JSON.stringify({ account: !disabled && body.email === "test@example.test" ? { id: "account-1", email: "test@example.test", passwordHash, name: "Test", role: "plumber", organisation: { id: "company-1", name: "Test", purchasePermission: "request" } } : null }));
     else if (req.url === "/workforce/push/register") res.end(JSON.stringify({ registered: true }));
     else if (req.url === "/workforce/push/unregister") res.end(JSON.stringify({ unregistered: true }));

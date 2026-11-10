@@ -18,6 +18,7 @@ test("private job files are streamed through current scoped gateway access", asy
     res.setHeader("content-type", "application/json");
     if (req.url === "/api/action") { res.end(JSON.stringify({ status: "success", value: { tokens: { token: "test-only" } } })); return; }
     assert.equal(req.headers["x-blake-sync-secret"], syncSecret);
+    if (req.url === "/workforce/accounts/start-session") { res.end(JSON.stringify({ started: true })); return; }
     if (req.url === "/workforce/accounts/authenticate" || req.url === "/workforce/accounts/provision-from-blake") {
       res.end(JSON.stringify({ account: disabled ? null : { id: "account-1", email: "test@example.test", name: "Synthetic", role: "plumber", organisation: { id: "company-1", name: "Synthetic", purchasePermission: "request" } } })); return;
     }
