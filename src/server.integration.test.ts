@@ -195,7 +195,7 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     const chat = await fetch(base + "/v1/jobs/job-1/chat/send", { method: "POST", headers,
       body: JSON.stringify({ jobDate: "2026-11-18", body: "Test chat", requestId: "message-1", accountId: "forged", companyId: "forged", jobId: "forged" }) });
     assert.equal(chat.status, 200);
-    const savedChat = calls.findLast(call => call.path === "/workforce/mobile/chat/send")!.body;
+    const savedChat = [...calls].reverse().find(call => call.path === "/workforce/mobile/chat/send")!.body;
     assert.equal(savedChat.accountId, "account-1");
     assert.equal(savedChat.companyId, "company-1");
     assert.equal(savedChat.jobId, "job-1");
