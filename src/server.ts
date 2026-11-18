@@ -161,6 +161,33 @@ app.post("/v1/auth/refresh", async (request, reply) => {
     return failure(error, request, reply);
   }
 });
+app.get("/v1/chats", async (request, reply) => {
+  try {
+    const input = dayInput.safeParse(request.query);
+    if (!input.success) return reply.code(400).send({ error: "Choose a valid date." });
+    const user = await currentUser(request);
+    return await blakeStore("/workforce/mobile/chat/inbox", { ...actor(user), date: input.data.date });
+  } catch (error) { return failure(error, request, reply); }
+});
+app.get("/v1/jobs/:jobId/chat", async (request, reply) => {
+  try {
+    const input = z.object({ date: jobDateInput, before: z.coerce.number().finite().positive().optional() }).safeParse(request.query);
+    if (!input.success) return reply.code(400).send({ error: "Choose a valid visit date." });
+    const user = await currentUser(request);
+    return await blakeStore("/workforce/mobile/chat", { ...actor(user), jobId: (request.params as { jobId: string }).jobId, jobDate: input.data.date, ...(input.data.before ? { before: input.data.before } : {}) });
+  } catch (error) { return failure(error, request, reply); }
+});
+for (const route of ["send", "read"] as const) app.post(`/v1/jobs/:jobId/chat/${route}`, async (request, reply) => {
+  try {
+    const input = (route === "send"
+      ? z.object({ jobDate: jobDateInput, body: z.string().trim().min(1).max(10000), requestId: z.string().min(1).max(100) })
+      : z.object({ jobDate: jobDateInput, through: z.number().finite().positive() })).safeParse(request.body);
+    if (!input.success) return reply.code(400).send({ error: "Check the visit date and message." });
+    const user = await currentUser(request);
+    const result = await blakeStore(`/workforce/mobile/chat/${route}`, { ...input.data, ...actor(user), jobId: (request.params as { jobId: string }).jobId });
+    return { ok: true, result };
+  } catch (error) { return failure(error, request, reply); }
+});
 app.post("/v1/push-tokens", async (request, reply) => {
   try {
     const user = await currentUser(request);
