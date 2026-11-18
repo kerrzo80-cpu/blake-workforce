@@ -31,6 +31,7 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     else if (req.url === "/workforce/mobile/jobs") res.end(JSON.stringify([{ id: "job-1", date: body.date, reference: "JB-TEST", costCentres: ["Bathroom"], tasks: [{ id: "task-1", name: "Bathroom" }] }]));
     else if (req.url === "/workforce/mobile/purchase") res.end(JSON.stringify({ reference: "POR-TEST", status: "requested" }));
     else if (req.url?.startsWith("/workforce/mobile/work/") || req.url?.startsWith("/workforce/mobile/completions/")) res.end(JSON.stringify({id:"saved-record",active:false,status:"signed"}));
+    else if (req.url?.startsWith("/workforce/mobile/chat")) res.end(JSON.stringify({ messages: [], latest: 0 }));
     else if (req.url === "/workforce/mobile/time") res.end(JSON.stringify({ ok: true, status: "pending-office-review" }));
     else if (req.url === "/workforce/mobile/unscheduled/jobs") res.end(JSON.stringify({ jobs: [{ id: "job-1", reference: "JB-TEST" }], cursor: "next", isDone: true }));
     else if (req.url === "/workforce/mobile/unscheduled/tasks") res.end(JSON.stringify([{ id: "task-1", name: "Bathroom" }]));
@@ -189,6 +190,17 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     assert.equal(oldForm.status, 409);
     const forged = await new SignJWT({ email: "test@example.test", organisationId: "company-1" }).setProtectedHeader({ alg: "HS256" }).setSubject("different-account").setExpirationTime("5m").sign(new TextEncoder().encode(secret));
     assert.equal((await fetch(`${base}/v1/me`, { headers: { authorization: `Bearer ${forged}` } })).status, 401);
+    assert.equal((await fetch(base + "/v1/chats?date=2026-11-18", { headers })).status, 200);
+    assert.equal((await fetch(base + "/v1/jobs/job-1/chat?date=2026-11-18", { headers })).status, 200);
+    const chat = await fetch(base + "/v1/jobs/job-1/chat/send", { method: "POST", headers,
+      body: JSON.stringify({ jobDate: "2026-11-18", body: "Test chat", requestId: "message-1", accountId: "forged", companyId: "forged", jobId: "forged" }) });
+    assert.equal(chat.status, 200);
+    const savedChat = [...calls].reverse().find(call => call.path === "/workforce/mobile/chat/send")!.body;
+    assert.equal(savedChat.accountId, "account-1");
+    assert.equal(savedChat.companyId, "company-1");
+    assert.equal(savedChat.jobId, "job-1");
+    assert.equal((await fetch(base + "/v1/jobs/job-1/chat?date=2026-11-18")).status, 401);
+    assert.equal((await fetch(base + "/v1/jobs/job-1/chat/send", { method: "POST", headers, body: JSON.stringify({ jobDate: "2026-11-18", body: "", requestId: "empty" }) })).status, 400);
     unavailable = true;
     const failed = await fetch(`${base}/v1/jobs?date=2026-09-08`, { headers });
     assert.equal(failed.status, 503); assert.ok(!(await failed.text()).includes("private upstream detail"));
