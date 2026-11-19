@@ -33,6 +33,10 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     else if (req.url === "/workforce/mobile/directory/job") res.end(JSON.stringify({ status: "completed", archived: true, job: { id: "job-closed", date: body.jobDate, reference: "JB-CLOSED", customer: "Customer", customerPhone: "+441234567890", site: "1 Test Street", scheduledTime: "No allocation", costCentres: ["Kitchen"], tasks: [{ id: "task-1", name: "Kitchen", totalCost: 999 }], notes: [], actualCost: 888888, invoiceId: "SECRET-INVOICE" } }));
     else if (req.url === "/workforce/mobile/purchase") res.end(JSON.stringify({ reference: "POR-TEST", status: "requested" }));
     else if (req.url?.startsWith("/workforce/mobile/work/") || req.url?.startsWith("/workforce/mobile/completions/")) res.end(JSON.stringify({id:"saved-record",active:false,status:"signed"}));
+    else if(req.url==="/workforce/mobile/chat/records")res.end(JSON.stringify({records:[{id:"lead-1",kind:body.kind,reference:"LD-ONE",title:"Survey",customer:"Customer",site:"Site",status:"new",unread:0,totalCost:999999}],cursor:"",isDone:true}));
+    else if(req.url==="/workforce/mobile/chat/record")res.end(JSON.stringify({messages:[{id:"entry-1",body:"Field note",author:"Chris",createdAt:1,mine:false,attachments:[{id:"file-1",name:"survey.pdf",mimeType:"application/pdf",sizeBytes:15,storageId:"DO-NOT-EXPOSE"}],privateOfficeNote:"HIDDEN"}],hasMore:false,latest:1,reference:"LD-ONE",title:"Survey",quotedSell:999999}));
+    else if(req.url==="/workforce/mobile/chat/upload"||req.url==="/workforce/mobile/chat/file-access")res.end(JSON.stringify({id:"file-1",name:"survey.pdf",mimeType:"application/pdf",sizeBytes:15,storageId:"DO-NOT-EXPOSE"}));
+    else if(req.url==="/workforce/mobile/chat/download"){res.setHeader("content-type","application/pdf");res.setHeader("content-disposition","attachment; filename=survey.pdf");res.end("%PDF-1.7\nfixture");}
     else if (req.url?.startsWith("/workforce/mobile/chat")) res.end(JSON.stringify({ messages: [], latest: 0 }));
     else if (req.url === "/workforce/mobile/time") res.end(JSON.stringify({ ok: true, status: "pending-office-review" }));
     else if (req.url === "/workforce/mobile/unscheduled/jobs") res.end(JSON.stringify({ jobs: [{ id: "job-1", reference: "JB-TEST" }], cursor: "next", isDone: true }));
@@ -106,6 +110,18 @@ test("HTTP gateway authenticates, scopes writes and reports upstream failures ho
     const expiredAccess = await new SignJWT({ tokenType: "access", email: "expired-access@example.test", organisationId: "company-1" }).setProtectedHeader({ alg: "HS256" }).setSubject("account-1").setExpirationTime(Math.floor(Date.now() / 1000) - 1).sign(new TextEncoder().encode(secret));
     assert.equal((await fetch(`${base}/v1/jobs?date=2026-09-08`, { headers: { authorization: `Bearer ${expiredAccess}` } })).status, 401);
     const headers = { "content-type": "application/json", authorization: `Bearer ${session.accessToken}` };
+    assert.equal((await fetch(`${base}/v1/record-chat/lead/lead-1`)).status,401);
+    const recordList=await fetch(`${base}/v1/chat-records/lead?companyId=forged`,{headers});assert.equal(recordList.status,200);assert.equal(JSON.stringify(await recordList.json()).includes("999999"),false);
+    const recordChat=await fetch(`${base}/v1/record-chat/lead/lead-1?companyId=forged`,{headers});assert.equal(recordChat.status,200);const chatBody=JSON.stringify(await recordChat.json());for(const secret of ["999999","DO-NOT-EXPOSE","HIDDEN"])assert.equal(chatBody.includes(secret),false);
+    assert.deepEqual(calls.filter(c=>c.path==="/workforce/mobile/chat/record").at(-1)!.body,{accountId:"account-1",companyId:"company-1",kind:"lead",recordId:"lead-1"});
+    const fileInput={fileName:"survey.pdf",mimeType:"application/pdf",base64:Buffer.from("%PDF-1.7\nfixture").toString("base64"),uploadKey:"upload-one"};
+    assert.equal((await fetch(`${base}/v1/record-chat/lead/lead-1/files`,{method:"POST",headers,body:JSON.stringify({...fileInput,accountId:"forged"})})).status,400);
+    const uploaded=await fetch(`${base}/v1/record-chat/lead/lead-1/files`,{method:"POST",headers,body:JSON.stringify(fileInput)});assert.equal(uploaded.status,201);assert.equal(JSON.stringify(await uploaded.json()).includes("storageId"),false);
+    const sent=await fetch(`${base}/v1/record-chat/lead/lead-1/send`,{method:"POST",headers,body:JSON.stringify({body:"",requestId:"files-only",attachmentIds:["file-1","file-2"]})});assert.equal(sent.status,200);
+    assert.deepEqual(calls.filter(c=>c.path==="/workforce/mobile/chat/record/send").at(-1)!.body,{accountId:"account-1",companyId:"company-1",kind:"lead",recordId:"lead-1",body:"",requestId:"files-only",attachmentIds:["file-1","file-2"]});
+    const binary=await fetch(`${base}/v1/record-chat/lead/lead-1/files/file-1`,{headers});assert.equal(binary.status,200);assert.equal(await binary.text(),"%PDF-1.7\nfixture");assert.equal(binary.headers.get("cache-control"),"no-store");
+    assert.equal((await fetch(`${base}/v1/record-chat/lead/lead-1/files/file-1/access`,{headers})).status,200);
+    assert.equal((await fetch(`${base}/v1/record-chat/general/lead-1`,{headers})).status,400);
     for (const token of ["ExpoPushToken[audit-token]", "ExponentPushToken[audit-token]"]) {
       assert.equal((await fetch(`${base}/v1/push-tokens`, { method: "POST", headers, body: JSON.stringify({ token, platform: "ios", companyId: "forged", accountId: "forged" }) })).status, 200);
       assert.deepEqual(calls.filter(call => call.path === "/workforce/push/register").at(-1)!.body, { accountId: "account-1", companyId: "company-1", token, platform: "ios" });
