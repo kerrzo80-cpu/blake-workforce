@@ -5,7 +5,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { z } from "zod";
 import { createHash, randomBytes } from "node:crypto";
 import { minutesFromClock } from "./clock.js";
-import { downloadJobFile, JobFileError } from "./job-files.js";
+import { downloadChatFile, downloadJobFile, JobFileError } from "./job-files.js";
 
 type Role = "plumber" | "manager" | "office";
 type PurchasePermission = "create" | "request";
@@ -104,6 +104,7 @@ async function assignedJob(user: WorkforceUser, jobId: string, jobDate: string, 
 class StoreError extends Error { constructor(public status: number, message: string) { super(message); } }
 function actor(user: WorkforceUser) { return { accountId: user.id, companyId: user.organisation.id }; }
 function failure(error: unknown, request: FastifyRequest, reply: FastifyReply) {
+  if (error instanceof z.ZodError) return reply.code(400).send({ error: "Check the selected record, message and files." });
   const unauthorised = error instanceof Error && (error.message === "UNAUTHENTICATED" || ("code" in error && /^ERR_(JWT|JWS|JOSE)/.test(String(error.code))));
   if (unauthorised) return reply.code(401).send({ error: "Please sign in again." });
   request.log.error(error, "Workforce request failed");
@@ -164,6 +165,34 @@ app.post("/v1/auth/refresh", async (request, reply) => {
     return failure(error, request, reply);
   }
 });
+const recordParams=z.object({kind:z.enum(["job","lead","quote"]),recordId:z.string().min(1).max(100)});
+const chatAttachment=z.object({id:z.string(),name:z.string(),mimeType:z.string(),sizeBytes:z.number().int().positive().max(10*1024*1024)});
+const fieldPage=z.object({messages:z.array(z.object({id:z.string(),body:z.string(),author:z.string(),createdAt:z.number(),mine:z.boolean(),attachments:z.array(chatAttachment).max(20)})).max(50),hasMore:z.boolean(),latest:z.number(),reference:z.string(),title:z.string()});
+app.get("/v1/chat-records/:kind",async(request,reply)=>{try{
+  const user=await currentUser(request),params=z.object({kind:z.enum(["lead","quote"])}).parse(request.params),input=z.object({cursor:z.string().max(4000).optional()}).parse(request.query);
+  const view=z.object({records:z.array(z.object({id:z.string(),kind:z.enum(["lead","quote"]),reference:z.string(),title:z.string(),customer:z.string(),site:z.string(),status:z.string(),unread:z.number()})),cursor:z.string(),isDone:z.boolean()});
+  return view.parse(await blakeStore("/workforce/mobile/chat/records",{...actor(user),...params,...input}));
+}catch(error){return failure(error,request,reply);}});
+app.get("/v1/record-chat/:kind/:recordId",async(request,reply)=>{try{
+  const user=await currentUser(request),params=recordParams.parse(request.params),input=z.object({before:z.coerce.number().finite().positive().optional()}).parse(request.query);
+  return fieldPage.parse(await blakeStore("/workforce/mobile/chat/record",{...actor(user),...params,...input}));
+}catch(error){return failure(error,request,reply);}});
+for(const route of ["send","read"] as const)app.post(`/v1/record-chat/:kind/:recordId/${route}`,async(request,reply)=>{try{
+  const user=await currentUser(request),params=recordParams.parse(request.params);
+  const input=(route==="send"?z.object({body:z.string().max(10000),requestId:z.string().min(1).max(100),attachmentIds:z.array(z.string().min(1).max(100)).max(20).optional()}).strict():z.object({through:z.number().finite().positive()}).strict()).parse(request.body);
+  return {ok:true,result:await blakeStore(`/workforce/mobile/chat/record/${route}`,{...actor(user),...params,...input})};
+}catch(error){return failure(error,request,reply);}});
+app.post("/v1/record-chat/:kind/:recordId/files",{bodyLimit:15*1024*1024},async(request,reply)=>{try{
+  const user=await currentUser(request),params=recordParams.parse(request.params);
+  const input=z.object({fileName:z.string().min(1).max(255),mimeType:z.string().max(150),base64:z.string().min(1).max(14*1024*1024),uploadKey:z.string().min(1).max(100)}).strict().parse(request.body);
+  return reply.code(201).send(chatAttachment.parse(await blakeStore("/workforce/mobile/chat/upload",{...actor(user),...params,...input})));
+}catch(error){return failure(error,request,reply);}});
+app.get("/v1/record-chat/:kind/:recordId/files/:fileId/access",async(request,reply)=>{try{const user=await currentUser(request),params=recordParams.extend({fileId:z.string().min(1).max(100)}).parse(request.params);return chatAttachment.parse(await blakeStore("/workforce/mobile/chat/file-access",{...actor(user),...params}));}catch(error){return failure(error,request,reply);}});
+app.get("/v1/record-chat/:kind/:recordId/files/:fileId",async(request,reply)=>{reply.header("cache-control","no-store").header("x-content-type-options","nosniff");try{
+  const user=await currentUser(request),params=recordParams.extend({fileId:z.string().min(1).max(100)}).parse(request.params);
+  const file=await downloadChatFile(blakeWorkforceStoreUrl,blakeSyncSecret,{...actor(user),...params});
+  return reply.header("content-type",file.mimeType).header("content-disposition",file.disposition).send(file.bytes);
+}catch(error){if(error instanceof JobFileError)return reply.code(error.status).send({error:error.message});return failure(error,request,reply);}});
 app.get("/v1/chats", async (request, reply) => {
   try {
     const input = dayInput.safeParse(request.query);

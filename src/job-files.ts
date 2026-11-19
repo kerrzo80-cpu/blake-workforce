@@ -8,9 +8,13 @@ export class JobFileError extends Error {
 
 export async function downloadJobFile(storeUrl: string, syncSecret: string | undefined, scope: {
   companyId: string; accountId: string; jobId: string; jobDate: string; documentId: string;
-}) {
+}) { return downloadPrivateFile(storeUrl, syncSecret, "/workforce/mobile/files/download", scope); }
+export async function downloadChatFile(storeUrl: string, syncSecret: string | undefined, scope: {
+  companyId: string; accountId: string; kind: "job" | "lead" | "quote"; recordId: string; fileId: string;
+}) { return downloadPrivateFile(storeUrl, syncSecret, "/workforce/mobile/chat/download", scope); }
+async function downloadPrivateFile(storeUrl: string, syncSecret: string | undefined, path: string, scope: Record<string, string>) {
   if (!syncSecret) throw new JobFileError(503);
-  const response = await fetch(storeUrl + "/workforce/mobile/files/download", {
+  const response = await fetch(storeUrl + path, {
     method: "POST", redirect: "error", signal: AbortSignal.timeout(45000),
     headers: { "content-type": "application/json", "x-blake-sync-secret": syncSecret },
     body: JSON.stringify(scope),
