@@ -21,6 +21,9 @@ const pushTokenInput = z.object({
 });
 const jobDateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const purchaseOrderInput = z.object({ referenceOnly: z.boolean().optional(), jobDate: jobDateInput, key: z.string().min(1).max(200).optional(), taskId: z.string().optional(), costCentre: z.string().min(1), supplier: z.string().min(1), description: z.string().min(1).max(2000).default("Materials collection — details to follow"), quantity: z.number().positive().max(10000).default(1), cost: z.number().nonnegative().max(1000000).default(0), vatRate: z.number().optional() });
+const directorySummary = z.object({ id: z.string(), reference: z.string(), title: z.string(), customer: z.string(), customerPhone: z.string().optional(), site: z.string(), status: z.string(), archived: z.boolean(), unread: z.number().int().min(0).max(100).optional() });
+const directoryPage = z.object({ jobs: z.array(directorySummary), cursor: z.string(), isDone: z.boolean() });
+const operationalDetail = z.object({ status: z.string(), archived: z.boolean(), job: z.object({ id: z.string(), date: z.string(), reference: z.string(), title: z.string().optional(), assignmentType: z.literal("job").optional(), customer: z.string(), customerPhone: z.string().optional(), site: z.string(), scheduledTime: z.string(), costCentres: z.array(z.string()), tasks: z.array(z.object({ id: z.string(), name: z.string() })), notes: z.array(z.object({ label: z.string(), text: z.string() })) }) });
 const timeInput = z.object({ jobDate: jobDateInput, taskId: z.string().optional(), start: z.string().min(1), finish: z.string().min(1), breakMinutes: z.number().int().min(0).max(1439).optional(), note: z.string().max(500).optional() });
 const stopGoInput = z.object({ jobDate: jobDateInput, gate: z.string().min(1), answer: z.enum(["pass", "stop"]), note: z.string().max(500).optional() });
 const blakeScheduleInput = z.object({ companyId: z.string().min(1).max(100), jobs: z.array(z.object({ plumberEmail: z.string().email(), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), reference: z.string().min(1), customer: z.string().min(1), site: z.string().min(1), scheduledTime: z.string().min(1), costCentres: z.array(z.string().min(1)).min(1) })).max(500) });
@@ -274,6 +277,32 @@ app.post("/v1/unscheduled/jobs/:jobId/work/amend", async (request, reply) => {
     return await blakeStore("/workforce/mobile/unscheduled/submit", { ...input.data, ...actor(user), jobId: (request.params as { jobId: string }).jobId });
   } catch (error) { return failure(error, request, reply); }
 });
+// Operational directory: identity always comes from the authenticated session.
+app.get("/v1/all-jobs", async (request, reply) => {
+  try {
+    const input = z.object({ cursor: z.string().max(4000).optional(), chat: z.literal("1").optional() }).safeParse(request.query);
+    if (!input.success) return reply.code(400).send({ error: "Invalid job page." });
+    const user = await currentUser(request);
+    return directoryPage.parse(await blakeStore("/workforce/mobile/directory/jobs", { ...actor(user), ...(input.data.cursor ? { cursor: input.data.cursor } : {}), ...(input.data.chat ? { includeUnread: true } : {}) }));
+  } catch (error) { return failure(error, request, reply); }
+});
+app.get("/v1/all-jobs/:jobId", async (request, reply) => {
+  try {
+    const input = dayInput.safeParse(request.query);
+    if (!input.success) return reply.code(400).send({ error: "Choose a valid work date." });
+    const user = await currentUser(request);
+    return operationalDetail.parse(await blakeStore("/workforce/mobile/directory/job", { ...actor(user), jobId: (request.params as { jobId: string }).jobId, jobDate: input.data.date }));
+  } catch (error) { return failure(error, request, reply); }
+});
+app.post("/v1/all-jobs/:jobId/purchase-orders", async (request, reply) => {
+  try {
+    const input = z.object({ jobDate: jobDateInput, key: z.string().min(1).max(200), taskId: z.string().min(1), costCentre: z.string().min(1), supplier: z.string().min(1) }).strict().safeParse(request.body);
+    if (!input.success) return reply.code(400).send({ error: "Choose a supplier and job cost centre. Priced items are not accepted here." });
+    const user = await currentUser(request);
+    return await blakeStore("/workforce/mobile/purchase", { ...input.data, ...actor(user), jobId: (request.params as { jobId: string }).jobId, directory: true, referenceOnly: true, description: "Materials collection — details to follow", quantity: 1, cost: 0 });
+  } catch (error) { return failure(error, request, reply); }
+});
+
 app.get("/v1/jobs", async (request, reply) => {
   try {
     const parsed = activityDayInput.safeParse(request.query);
